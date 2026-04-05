@@ -968,7 +968,7 @@ async function renderStaticDashboard() {
 
   if (domainGroups.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = 'Open tabs';
-    openTabsSectionCount.textContent = `${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''}`;
+    openTabsSectionCount.innerHTML = `${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
     openTabsMissionsEl.innerHTML = domainGroups
       .map((g, idx) => renderDomainCard(g, idx))
       .join('');
@@ -1124,7 +1124,8 @@ async function renderAIDashboard(options = {}) {
 
   if (openTabMissions.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = 'Right now';
-    openTabsSectionCount.textContent = `${openTabMissions.length} mission${openTabMissions.length !== 1 ? 's' : ''}`;
+    const totalTabs = openTabMissions.reduce((s, m) => s + (m.tabs || []).length, 0);
+    openTabsSectionCount.innerHTML = `${openTabMissions.length} mission${openTabMissions.length !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${totalTabs} tabs</button>`;
     openTabsMissionsEl.innerHTML = openTabMissions
       .map((m, idx) => renderOpenTabsMissionCard(m, idx))
       .join('');
@@ -1306,6 +1307,26 @@ document.addEventListener('click', async (e) => {
     setTimeout(() => actionEl.remove(), 200);
 
     showToast(`Closed duplicates, kept one copy each`);
+    return;
+  }
+
+  // ---- close-all-open-tabs: close every tab across all AI missions ----
+  if (action === 'close-all-open-tabs') {
+    const allUrls = openTabMissions.flatMap(m => (m.tabs || []).map(t => t.url));
+    await closeTabsByUrls(allUrls);
+    playCloseSound();
+
+    // Animate all cards out
+    document.querySelectorAll('#openTabsMissions .mission-card').forEach(c => {
+      shootConfetti(
+        c.getBoundingClientRect().left + c.offsetWidth / 2,
+        c.getBoundingClientRect().top + c.offsetHeight / 2
+      );
+      animateCardOut(c);
+    });
+
+    openTabMissions = [];
+    showToast('All tabs closed. Fresh start.');
     return;
   }
 
