@@ -1101,11 +1101,10 @@ async function renderStaticDashboard() {
   // can close them all at once instead of hunting across domain cards.
   const LANDING_PAGE_PATTERNS = [
     { hostname: 'mail.google.com',             pathPrefix: '/mail/' },
-    { hostname: 'x.com',                       pathExact: ['/home', '/zarazhangrui'] },
+    { hostname: 'x.com',                       pathExact: ['/home'] },
     { hostname: 'www.linkedin.com',            pathExact: ['/'] },
     { hostname: 'github.com',                  pathExact: ['/'] },
     { hostname: 'www.youtube.com',             pathExact: ['/'] },
-    { hostname: 'bytedance.larkoffice.com',    pathPrefix: '/drive/home' },
   ];
 
   function isLandingPage(url) {
