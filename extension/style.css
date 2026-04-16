@@ -18,6 +18,8 @@
   --status-abandoned: #b35a5a;
   --card-bg: #fffdf9;
   --shadow: rgba(26, 22, 19, 0.06);
+  --accent-sage-dark: #4a6952;
+  --dup-badge-bg: rgba(200, 113, 58, 0.08);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -994,7 +996,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 }
 
 .update-banner-btn:hover {
-  background: #4a6952; /* slightly darker sage */
+  background: var(--accent-sage-dark);
 }
 
 .update-banner-btn:disabled {
@@ -1301,4 +1303,37 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
   color: var(--muted);
   opacity: 0.6;
   flex-shrink: 0;
+}
+
+/* ============================================================
+   Dark Mode — follows system color scheme
+   ============================================================ */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Base palette — standard dark theme */
+    --paper:     #1E1E1E;
+    --ink:       #E0E0E0;
+    --warm-gray: rgba(255, 255, 255, 0.10);
+    --muted:     #888888;
+    --card-bg:   #2D2D2D;
+
+    /* Shadows — soft dark glow */
+    --shadow:    rgba(0, 0, 0, 0.30);
+
+    /* Accents — vivid on both backgrounds, unchanged */
+    --accent-amber: #c8713a;
+    --accent-sage:  #5a7a62;
+    --accent-slate: #5a6b7a;
+    --accent-rose:  #b35a5a;
+
+    /* Status colors — brightened for dark backgrounds */
+    --status-active:    #4a8a5a;
+    --status-cooling:   #c99a3a;
+    --status-abandoned: #c06a6a;
+
+    /* Derived values */
+    --dup-badge-bg: rgba(200, 113, 58, 0.12);
+    --accent-sage-dark: #3d5a44;
+  }
 }
