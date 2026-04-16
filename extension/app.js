@@ -890,7 +890,10 @@ function renderDomainCard(group) {
   const tabs      = group.tabs || [];
   const tabCount  = tabs.length;
   const isLanding = group.domain === '__landing-pages__';
-  const stableId  = 'domain-' + group.domain.replace(/[^a-z0-9]/g, '-');
+  // Include windowId in stableId so the same domain in different windows
+  // gets distinct IDs and close-domain-tabs works correctly.
+  const windowSuffix = group.windowId ? '-w' + group.windowId : '';
+  const stableId  = 'domain-' + group.domain.replace(/[^a-z0-9]/g, '-') + windowSuffix;
 
   // Count duplicates (exact URL match)
   const urlCounts = {};
@@ -1237,7 +1240,53 @@ async function renderStaticDashboard() {
   if (domainGroups.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = 'Open tabs';
     openTabsSectionCount.innerHTML = `${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
-    openTabsMissionsEl.innerHTML = domainGroups.map(g => renderDomainCard(g)).join('');
+
+    // Split each domain group by window so the same domain in two windows
+    // appears as two separate cards.
+    const splitGroups = [];
+    for (const group of domainGroups) {
+      const windowMap = {};
+      for (const tab of group.tabs) {
+        const wid = tab.windowId;
+        if (!windowMap[wid]) windowMap[wid] = { ...group, tabs: [], windowId: wid };
+        windowMap[wid].tabs.push(tab);
+      }
+      splitGroups.push(...Object.values(windowMap));
+    }
+    // Replace domainGroups with the window-split version so event handlers
+    // (close-domain-tabs) can still find the right group.
+    domainGroups = splitGroups;
+
+    // Determine unique windows and their display order (current window first)
+    const currentWindow = await chrome.windows.getCurrent();
+    const currentWindowId = currentWindow.id;
+    const windowIds = [...new Set(splitGroups.map(g => g.windowId))].sort((a, b) =>
+      a === currentWindowId ? -1 : b === currentWindowId ? 1 : a - b
+    );
+    const multiWindow = windowIds.length > 1;
+
+    // Build HTML — add a window section header before each window's cards
+    let cardsHtml = '';
+    windowIds.forEach((wid, idx) => {
+      if (multiWindow) {
+        const label = wid === currentWindowId ? 'This window' : `Window ${idx + 1}`;
+        const switchBtn = wid !== currentWindowId
+          ? `<button class="window-switch-btn" data-action="focus-window" data-window-id="${wid}" title="Switch to this window">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 19.5 15-15m0 0H8.25m11.25 0v11.25" /></svg>
+              Switch here
+            </button>
+            <button class="window-switch-btn window-close-btn" data-action="close-window-tabs" data-window-id="${wid}" title="Close all tabs in this window">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+              Close window
+            </button>`
+          : '';
+        cardsHtml += `<div class="window-section-header" style="column-span:all">${label}${switchBtn}</div>`;
+      }
+      const groups = splitGroups.filter(g => g.windowId === wid);
+      cardsHtml += groups.map(g => renderDomainCard(g)).join('');
+    });
+
+    openTabsMissionsEl.innerHTML = cardsHtml;
     openTabsSection.style.display = 'block';
 
     // Show the search bar when there are tabs to search
@@ -1310,6 +1359,45 @@ document.addEventListener('click', async (e) => {
   if (action === 'focus-tab') {
     const tabUrl = actionEl.dataset.tabUrl;
     if (tabUrl) await focusTab(tabUrl);
+    return;
+  }
+
+  // ---- Switch to another window ----
+  if (action === 'focus-window') {
+    const windowId = parseInt(actionEl.dataset.windowId, 10);
+    if (windowId) await chrome.windows.update(windowId, { focused: true });
+    return;
+  }
+
+  // ---- Close all tabs in another window ----
+  if (action === 'close-window-tabs') {
+    const windowId = parseInt(actionEl.dataset.windowId, 10);
+    if (!windowId) return;
+
+    const allTabs = await chrome.tabs.query({ windowId });
+    const toClose = allTabs.map(t => t.id);
+    if (toClose.length > 0) await chrome.tabs.remove(toClose);
+    await fetchOpenTabs();
+    playCloseSound();
+
+    // Remove all cards belonging to this window from the DOM
+    domainGroups
+      .filter(g => g.windowId === windowId)
+      .forEach(g => {
+        const windowSuffix = '-w' + windowId;
+        const stableId = 'domain-' + g.domain.replace(/[^a-z0-9]/g, '-') + windowSuffix;
+        const card = document.querySelector(`.mission-card[data-domain-id="${stableId}"]`);
+        if (card) animateCardOut(card);
+      });
+    domainGroups = domainGroups.filter(g => g.windowId !== windowId);
+
+    // Remove the window section header
+    const header = actionEl.closest('.window-section-header');
+    if (header) header.remove();
+
+    const statTabs = document.getElementById('statTabs');
+    if (statTabs) statTabs.textContent = openTabs.length;
+    showToast(`Closed all tabs in Window`);
     return;
   }
 
@@ -1436,7 +1524,8 @@ document.addEventListener('click', async (e) => {
   if (action === 'close-domain-tabs') {
     const domainId = actionEl.dataset.domainId;
     const group    = domainGroups.find(g => {
-      return 'domain-' + g.domain.replace(/[^a-z0-9]/g, '-') === domainId;
+      const windowSuffix = g.windowId ? '-w' + g.windowId : '';
+      return 'domain-' + g.domain.replace(/[^a-z0-9]/g, '-') + windowSuffix === domainId;
     });
     if (!group) return;
 
