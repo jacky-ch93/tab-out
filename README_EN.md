@@ -57,7 +57,9 @@ Tab Out flips the script: **makes closing tabs easy, clear, and even a little sa
 
 ## Install
 
-**With a coding agent (recommended)**
+Choose one of the following:
+
+**Option 1: With a coding agent (recommended)**
 
 Send your coding agent (Claude Code, Codex, etc.) this repo and say **"install this"**:
 
@@ -67,7 +69,7 @@ https://github.com/jacky-ch93/tab-out
 
 The agent will walk you through it.
 
-**Download a Release**
+**Option 2: Download a Release**
 
 1. Go to the [Releases page](https://github.com/jacky-ch93/tab-out/releases) and download the latest `Source code (zip)`
 2. Unzip it
@@ -76,7 +78,7 @@ The agent will walk you through it.
 5. Click **Load unpacked** and select the `extension/` folder inside the unzipped directory
 6. Click the extension icon — Tab Out will open
 
-**Clone the repo**
+**Option 3: Clone the repo**
 
 1. Clone the repo
 
