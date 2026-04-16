@@ -40,11 +40,12 @@ async function fetchOpenTabs() {
 
     const tabs = await chrome.tabs.query({});
     openTabs = tabs.map(t => ({
-      id:       t.id,
-      url:      t.url,
-      title:    t.title,
-      windowId: t.windowId,
-      active:   t.active,
+      id:           t.id,
+      url:          t.url,
+      title:        t.title,
+      windowId:     t.windowId,
+      active:       t.active,
+      lastAccessed: t.lastAccessed || 0,
       // Flag Tab Out's own pages so we can detect duplicate new tabs
       isTabOut: t.url === newtabUrl || t.url === 'chrome://newtab/',
     }));
@@ -492,8 +493,38 @@ function timeAgo(dateStr) {
 }
 
 /**
- * getGreeting() — "Good morning / afternoon / evening"
+ * getGroupStatus(tabs)
+ *
+ * Returns the staleness status of a group based on the most recently
+ * accessed tab's lastAccessed timestamp.
+ *
+ *   active    — accessed within the last 30 minutes  (green)
+ *   cooling   — 30 minutes to 4 hours ago            (amber)
+ *   abandoned — more than 4 hours ago                (red)
+ *   neutral   — no lastAccessed data available
  */
+function getGroupStatus(tabs) {
+  const mostRecent = Math.max(...tabs.map(t => t.lastAccessed || 0));
+  if (!mostRecent) return 'neutral';
+  const ageMinutes = (Date.now() - mostRecent) / 60000;
+  if (ageMinutes < 30)  return 'active';
+  if (ageMinutes < 240) return 'cooling';
+  return 'abandoned';
+}
+
+/**
+ * lastActiveAgo(tabs)
+ *
+ * Returns a short human-readable string for the most recent access time
+ * among all tabs in a group. e.g. "3 min ago", "2 hrs ago".
+ */
+function lastActiveAgo(tabs) {
+  const mostRecent = Math.max(...tabs.map(t => t.lastAccessed || 0));
+  if (!mostRecent) return '';
+  return timeAgo(new Date(mostRecent).toISOString());
+}
+
+
 function getGreeting() {
   const hour = new Date().getHours();
   if (hour < 12) return 'Good morning';
@@ -898,9 +929,29 @@ function renderDomainCard(group) {
   // Count duplicates (exact URL match)
   const urlCounts = {};
   for (const tab of tabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
-  const dupeUrls   = Object.entries(urlCounts).filter(([, c]) => c > 1);
-  const hasDupes   = dupeUrls.length > 0;
+  const dupeUrls    = Object.entries(urlCounts).filter(([, c]) => c > 1);
+  const hasDupes    = dupeUrls.length > 0;
   const totalExtras = dupeUrls.reduce((s, [, c]) => s + c - 1, 0);
+
+  // Staleness status — drives the top bar color
+  const status   = getGroupStatus(tabs);
+  const ageLabel = lastActiveAgo(tabs);
+  const barClass =
+    hasDupes              ? 'has-amber-bar' :
+    status === 'active'   ? 'has-active-bar' :
+    status === 'cooling'  ? 'has-amber-bar' :
+    status === 'abandoned'? 'has-abandoned-bar' :
+                            'has-neutral-bar';
+
+  const statusColors = {
+    active:    'var(--status-active)',
+    cooling:   'var(--status-cooling)',
+    abandoned: 'var(--status-abandoned)',
+    neutral:   'var(--muted)',
+  };
+  const ageBadge = ageLabel
+    ? `<span class="status-age-badge" style="color:${statusColors[status] || statusColors.neutral}">${ageLabel}</span>`
+    : '';
 
   const tabBadge = `<span class="open-tabs-badge">
     ${ICONS.tabs}
@@ -967,13 +1018,14 @@ function renderDomainCard(group) {
   }
 
   return `
-    <div class="mission-card domain-card ${hasDupes ? 'has-amber-bar' : 'has-neutral-bar'}" data-domain-id="${stableId}">
+    <div class="mission-card domain-card ${barClass}" data-domain-id="${stableId}">
       <div class="status-bar"></div>
       <div class="mission-content">
         <div class="mission-top">
           <span class="mission-name">${isLanding ? 'Homepages' : (group.label || friendlyDomain(group.domain))}</span>
           ${tabBadge}
           ${dupeBadge}
+          ${ageBadge}
         </div>
         <div class="mission-pages">${pageChips}</div>
         <div class="actions">${actionsHtml}</div>

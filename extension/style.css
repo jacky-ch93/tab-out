@@ -385,9 +385,20 @@ header {
   background: var(--warm-gray);
 }
 
-.mission-card.has-active-bar::before { background: var(--status-active); }
-.mission-card.has-amber-bar::before { background: var(--accent-amber); }
-.mission-card.has-neutral-bar::before { background: var(--warm-gray); }
+.mission-card.has-active-bar::before   { background: var(--status-active); }
+.mission-card.has-amber-bar::before    { background: var(--accent-amber); }
+.mission-card.has-abandoned-bar::before{ background: var(--status-abandoned); }
+.mission-card.has-neutral-bar::before  { background: var(--warm-gray); }
+
+/* Last-active time badge — shows staleness next to tab count */
+.status-age-badge {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: rgba(154, 145, 138, 0.08);
+  white-space: nowrap;
+}
 
 .mission-card:hover {
   box-shadow: 0 4px 20px var(--shadow);
