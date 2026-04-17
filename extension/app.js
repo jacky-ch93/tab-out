@@ -1944,3 +1944,53 @@ function initI18nElements() {
 
 initI18nElements();
 renderDashboard();
+
+
+/* ----------------------------------------------------------------
+   AUTO-REFRESH — React to tab changes in real time
+
+   Since this IS an extension page, we can listen directly to
+   chrome.tabs events. We debounce refreshes so that a burst of
+   changes (e.g. closing many tabs at once) only triggers one
+   re-render.
+   ---------------------------------------------------------------- */
+(function initAutoRefresh() {
+  let refreshTimer = null;
+
+  function scheduleRefresh() {
+    // Don't clobber an active search query
+    const searchInput = document.getElementById('tabSearch');
+    if (searchInput && searchInput.value.trim()) return;
+
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(async () => {
+      await renderStaticDashboard();
+    }, 500);
+  }
+
+  chrome.tabs.onCreated.addListener(scheduleRefresh);
+  chrome.tabs.onRemoved.addListener(scheduleRefresh);
+  chrome.tabs.onUpdated.addListener((_id, changeInfo) => {
+    // Only refresh on meaningful changes to avoid noise from minor updates
+    if (changeInfo.title || changeInfo.url || changeInfo.status === 'complete') {
+      scheduleRefresh();
+    }
+  });
+  chrome.tabs.onActivated.addListener(scheduleRefresh);
+  chrome.tabs.onMoved.addListener(scheduleRefresh);
+  chrome.tabs.onAttached.addListener(scheduleRefresh);
+  chrome.tabs.onDetached.addListener(scheduleRefresh);
+})();
+
+
+/* ----------------------------------------------------------------
+   MANUAL REFRESH BUTTON
+   ---------------------------------------------------------------- */
+document.getElementById('refreshBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('refreshBtn');
+  if (btn) btn.classList.add('spinning');
+  await renderStaticDashboard();
+  if (btn) {
+    btn.classList.remove('spinning');
+  }
+});
