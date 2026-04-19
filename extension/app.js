@@ -2080,6 +2080,7 @@ async function renderShortcuts() {
       data-action="shortcut-open"
       data-shortcut-url="${safeUrl}"
       data-shortcut-id="${shortcut.id}"
+      draggable="true"
       title="${safeTitle}">
       <div class="shortcut-img-box">
         ${faviconUrl
@@ -2090,6 +2091,74 @@ async function renderShortcuts() {
       <span class="shortcut-label">${safeTitle}</span>
     </div>`;
   }).join('');
+
+  // Set up drag and drop
+  setupShortcutDragDrop();
+}
+
+/* ----------------------------------------------------------------
+   SHORTCUTS DRAG AND DROP — Reorder shortcuts
+   ---------------------------------------------------------------- */
+let draggedShortcutId = null;
+
+function setupShortcutDragDrop() {
+  const container = document.getElementById('shortcutsIcons');
+  if (!container) return;
+
+  const icons = container.querySelectorAll('.shortcut-icon');
+
+  icons.forEach(icon => {
+    icon.addEventListener('dragstart', (e) => {
+      draggedShortcutId = icon.dataset.shortcutId;
+      icon.style.opacity = '0.5';
+      e.dataTransfer.effectAllowed = 'move';
+    });
+
+    icon.addEventListener('dragend', () => {
+      icon.style.opacity = '1';
+      draggedShortcutId = null;
+    });
+
+    icon.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    });
+
+    icon.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      if (icon.dataset.shortcutId !== draggedShortcutId) {
+        icon.style.transform = 'scale(1.05)';
+        icon.style.boxShadow = '0 4px 12px var(--shadow)';
+      }
+    });
+
+    icon.addEventListener('dragleave', () => {
+      icon.style.transform = '';
+      icon.style.boxShadow = '';
+    });
+
+    icon.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      icon.style.transform = '';
+      icon.style.boxShadow = '';
+
+      if (!draggedShortcutId || icon.dataset.shortcutId === draggedShortcutId) return;
+
+      // Reorder shortcuts
+      const shortcuts = await getShortcuts();
+      const fromIdx = shortcuts.findIndex(s => s.id === draggedShortcutId);
+      const toIdx = shortcuts.findIndex(s => s.id === icon.dataset.shortcutId);
+
+      if (fromIdx === -1 || toIdx === -1) return;
+
+      // Remove from old position and insert at new position
+      const [moved] = shortcuts.splice(fromIdx, 1);
+      shortcuts.splice(toIdx, 0, moved);
+
+      await saveShortcuts(shortcuts);
+      renderShortcuts();
+    });
+  });
 }
 
 /* ----------------------------------------------------------------

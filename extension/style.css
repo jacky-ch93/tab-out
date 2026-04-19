@@ -182,6 +182,14 @@ header {
   box-shadow: 0 6px 16px var(--shadow);
 }
 
+.shortcut-icon[draggable="true"] {
+  cursor: grab;
+}
+
+.shortcut-icon[draggable="true"]:active {
+  cursor: grabbing;
+}
+
 .shortcut-icon .shortcut-img-box {
   width: 60px;
   height: 60px;
