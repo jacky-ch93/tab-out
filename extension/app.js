@@ -2139,6 +2139,11 @@ async function renderShortcuts() {
    ---------------------------------------------------------------- */
 let draggedShortcut = null;
 let dragStartIndex = -1;
+let dragStartX = 0;
+let dragStartY = 0;
+let shortcutWasDragged = false;
+let suppressShortcutClick = false;
+const shortcutDragThreshold = 4;
 
 function setupShortcutDragDrop() {
   const container = document.getElementById('shortcutsIcons');
@@ -2152,64 +2157,82 @@ function setupShortcutDragDrop() {
 
       draggedShortcut = icon;
       dragStartIndex = index;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      shortcutWasDragged = false;
       icon.classList.add('dragging');
 
       // Prevent text selection during drag
       e.preventDefault();
     });
   });
-
-  // Global mouse events for drag
-  document.addEventListener('mousemove', (e) => {
-    if (!draggedShortcut) return;
-
-    const container = document.getElementById('shortcutsIcons');
-    const icons = Array.from(container.querySelectorAll('.shortcut-icon'));
-
-    // Find which icon we're hovering over
-    let hoverIndex = -1;
-    for (let i = 0; i < icons.length; i++) {
-      const iconRect = icons[i].getBoundingClientRect();
-      if (e.clientX >= iconRect.left && e.clientX <= iconRect.right &&
-          e.clientY >= iconRect.top && e.clientY <= iconRect.bottom) {
-        hoverIndex = i;
-        break;
-      }
-    }
-
-    if (hoverIndex !== -1 && hoverIndex !== dragStartIndex) {
-      // Reorder visually
-      const movedIcon = icons.splice(dragStartIndex, 1)[0];
-      icons.splice(hoverIndex, 0, movedIcon);
-
-      // Update DOM order
-      icons.forEach(icon => container.appendChild(icon));
-
-      dragStartIndex = hoverIndex;
-    }
-  });
-
-  document.addEventListener('mouseup', async () => {
-    if (!draggedShortcut) return;
-
-    draggedShortcut.classList.remove('dragging');
-    draggedShortcut = null;
-
-    // Save the new order
-    const container = document.getElementById('shortcutsIcons');
-    const icons = Array.from(container.querySelectorAll('.shortcut-icon'));
-    const newOrder = icons.map(icon => icon.dataset.shortcutId);
-
-    const shortcuts = await getShortcuts();
-    const reordered = [];
-    for (const id of newOrder) {
-      const shortcut = shortcuts.find(s => s.id === id);
-      if (shortcut) reordered.push(shortcut);
-    }
-
-    await saveShortcuts(reordered);
-  });
 }
+
+document.addEventListener('mousemove', (e) => {
+  if (!draggedShortcut) return;
+
+  if (!shortcutWasDragged) {
+    const movedX = Math.abs(e.clientX - dragStartX);
+    const movedY = Math.abs(e.clientY - dragStartY);
+    if (movedX >= shortcutDragThreshold || movedY >= shortcutDragThreshold) {
+      shortcutWasDragged = true;
+    }
+  }
+
+  const container = document.getElementById('shortcutsIcons');
+  const icons = Array.from(container.querySelectorAll('.shortcut-icon'));
+
+  // Find which icon we're hovering over
+  let hoverIndex = -1;
+  for (let i = 0; i < icons.length; i++) {
+    const iconRect = icons[i].getBoundingClientRect();
+    if (e.clientX >= iconRect.left && e.clientX <= iconRect.right &&
+        e.clientY >= iconRect.top && e.clientY <= iconRect.bottom) {
+      hoverIndex = i;
+      break;
+    }
+  }
+
+  if (hoverIndex !== -1 && hoverIndex !== dragStartIndex) {
+    // Reorder visually
+    const movedIcon = icons.splice(dragStartIndex, 1)[0];
+    icons.splice(hoverIndex, 0, movedIcon);
+
+    // Update DOM order
+    icons.forEach(icon => container.appendChild(icon));
+
+    dragStartIndex = hoverIndex;
+  }
+});
+
+document.addEventListener('mouseup', async () => {
+  if (!draggedShortcut) return;
+
+  draggedShortcut.classList.remove('dragging');
+  draggedShortcut = null;
+
+  if (shortcutWasDragged) {
+    suppressShortcutClick = true;
+    requestAnimationFrame(() => {
+      suppressShortcutClick = false;
+    });
+  }
+
+  // Save the new order
+  const container = document.getElementById('shortcutsIcons');
+  const icons = Array.from(container.querySelectorAll('.shortcut-icon'));
+  const newOrder = icons.map(icon => icon.dataset.shortcutId);
+
+  const shortcuts = await getShortcuts();
+  const reordered = [];
+  for (const id of newOrder) {
+    const shortcut = shortcuts.find(s => s.id === id);
+    if (shortcut) reordered.push(shortcut);
+  }
+
+  shortcutWasDragged = false;
+  await saveShortcuts(reordered);
+});
 
 /* ----------------------------------------------------------------
    SHORTCUTS EVENT HANDLERS
@@ -2220,8 +2243,11 @@ async function updateShortcutFavicon(shortcutId, faviconUrl) {
 
   const shortcuts = await getShortcuts();
   const idx = shortcuts.findIndex(s => s.id === shortcutId);
-  if (idx !== -1 && shortcuts[idx].faviconUrl !== faviconUrl) {
-    shortcuts[idx].faviconUrl = faviconUrl;
+  if (idx === -1) return;
+
+  const nextFaviconUrl = chooseShortcutFavicon(shortcuts[idx].faviconUrl, faviconUrl);
+  if (shortcuts[idx].faviconUrl !== nextFaviconUrl) {
+    shortcuts[idx].faviconUrl = nextFaviconUrl;
     await saveShortcuts(shortcuts);
     renderShortcuts();
   }
@@ -2231,6 +2257,7 @@ async function updateShortcutFavicon(shortcutId, faviconUrl) {
 document.addEventListener('click', async (e) => {
   const icon = e.target.closest('[data-action="shortcut-open"]');
   if (!icon) return;
+  if (suppressShortcutClick) return;
 
   const url = icon.dataset.shortcutUrl;
   const shortcutId = icon.dataset.shortcutId;
@@ -2420,6 +2447,7 @@ function openShortcutForm(shortcut = null) {
   }
 
   modal.classList.add('visible');
+  titleInput.focus();
 }
 
 function closeShortcutForm() {
@@ -2438,15 +2466,17 @@ async function submitShortcutForm() {
     return;
   }
 
+  let parsedUrl;
+
   // Validate URL
   try {
-    new URL(url);
+    parsedUrl = new URL(url);
   } catch {
     showToast('Please enter a valid URL');
     return;
   }
 
-  const title = titleInput.value.trim() || url;
+  const title = titleInput.value.trim() || parsedUrl.hostname.replace(/^www\./, '');
   const shortcuts = currentEditingId ? await getShortcuts() : [];
   const existingShortcut = currentEditingId
     ? shortcuts.find(shortcut => shortcut.id === currentEditingId)
