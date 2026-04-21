@@ -2006,6 +2006,19 @@ async function saveShortcuts(shortcuts) {
   await chrome.storage.sync.set({ shortcuts });
 }
 
+function isShortcutFallbackFavicon(faviconUrl) {
+  return typeof faviconUrl === 'string' && faviconUrl.startsWith('https://www.google.com/s2/favicons?');
+}
+
+function chooseShortcutFavicon(existingFaviconUrl, incomingFaviconUrl) {
+  if (!incomingFaviconUrl) return existingFaviconUrl || '';
+  if (!existingFaviconUrl) return incomingFaviconUrl;
+  if (isShortcutFallbackFavicon(incomingFaviconUrl) && !isShortcutFallbackFavicon(existingFaviconUrl)) {
+    return existingFaviconUrl;
+  }
+  return incomingFaviconUrl;
+}
+
 /**
  * addShortcut(url, title, faviconUrl)
  *
@@ -2018,7 +2031,7 @@ async function addShortcut(url, title, faviconUrl) {
     id,
     url: url.trim(),
     title: title.trim() || url,
-    faviconUrl: faviconUrl || '',
+    faviconUrl: chooseShortcutFavicon('', faviconUrl),
   });
   await saveShortcuts(shortcuts);
   return id;
@@ -2037,7 +2050,7 @@ async function updateShortcut(id, url, title, faviconUrl) {
       ...shortcuts[idx],
       url: url.trim(),
       title: title.trim() || url,
-      faviconUrl: faviconUrl || '',
+      faviconUrl: chooseShortcutFavicon(shortcuts[idx].faviconUrl, faviconUrl),
     };
     await saveShortcuts(shortcuts);
   }
@@ -2434,7 +2447,11 @@ async function submitShortcutForm() {
   }
 
   const title = titleInput.value.trim() || url;
-  const faviconUrl = getFaviconForShortcut(url);
+  const shortcuts = currentEditingId ? await getShortcuts() : [];
+  const existingShortcut = currentEditingId
+    ? shortcuts.find(shortcut => shortcut.id === currentEditingId)
+    : null;
+  const faviconUrl = existingShortcut?.faviconUrl || getFaviconForShortcut(url);
 
   if (currentEditingId) {
     await updateShortcut(currentEditingId, url, title, faviconUrl);
