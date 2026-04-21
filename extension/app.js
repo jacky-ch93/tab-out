@@ -117,8 +117,32 @@ async function closeTabsExact(urls) {
  * Switches Chrome to the tab with the given URL (exact match first,
  * then hostname fallback). Also brings the window to the front.
  */
-async function focusTab(url) {
-  if (!url) return;
+function normalizeShortcutUrl(url) {
+  if (typeof url !== 'string') return '';
+  return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+
+function pickTabToFocus(matches, currentWindowId) {
+  return matches.find(t => t.windowId !== currentWindowId) || matches[0] || null;
+}
+
+function getShortcutPrefixMatches(shortcutUrl, allTabs) {
+  const normalizedShortcutUrl = normalizeShortcutUrl(shortcutUrl);
+
+  return allTabs.filter(tab => {
+    if (typeof tab.url !== 'string') return false;
+
+    const normalizedTabUrl = normalizeShortcutUrl(tab.url);
+    if (normalizedTabUrl === normalizedShortcutUrl) return true;
+    if (!normalizedTabUrl.startsWith(normalizedShortcutUrl)) return false;
+
+    const nextChar = normalizedTabUrl.charAt(normalizedShortcutUrl.length);
+    return nextChar === '/' || nextChar === '?' || nextChar === '#' || nextChar === '';
+  });
+}
+
+async function focusTab(url, { exactOnly = false } = {}) {
+  if (!url) return null;
   const allTabs = await chrome.tabs.query({});
   const currentWindow = await chrome.windows.getCurrent();
 
@@ -126,7 +150,7 @@ async function focusTab(url) {
   let matches = allTabs.filter(t => t.url === url);
 
   // Fall back to hostname match
-  if (matches.length === 0) {
+  if (!exactOnly && matches.length === 0) {
     try {
       const targetHost = new URL(url).hostname;
       matches = allTabs.filter(t => {
@@ -136,12 +160,13 @@ async function focusTab(url) {
     } catch {}
   }
 
-  if (matches.length === 0) return;
+  if (matches.length === 0) return null;
 
   // Prefer a match in a different window so it actually switches windows
-  const match = matches.find(t => t.windowId !== currentWindow.id) || matches[0];
+  const match = pickTabToFocus(matches, currentWindow.id);
   await chrome.tabs.update(match.id, { active: true });
   await chrome.windows.update(match.windowId, { focused: true });
+  return match;
 }
 
 /**
@@ -2177,6 +2202,18 @@ function setupShortcutDragDrop() {
    SHORTCUTS EVENT HANDLERS
    ---------------------------------------------------------------- */
 
+async function updateShortcutFavicon(shortcutId, faviconUrl) {
+  if (!shortcutId || !faviconUrl || !faviconUrl.startsWith('https://')) return;
+
+  const shortcuts = await getShortcuts();
+  const idx = shortcuts.findIndex(s => s.id === shortcutId);
+  if (idx !== -1 && shortcuts[idx].faviconUrl !== faviconUrl) {
+    shortcuts[idx].faviconUrl = faviconUrl;
+    await saveShortcuts(shortcuts);
+    renderShortcuts();
+  }
+}
+
 // Left-click on shortcut icon: open URL
 document.addEventListener('click', async (e) => {
   const icon = e.target.closest('[data-action="shortcut-open"]');
@@ -2186,7 +2223,26 @@ document.addEventListener('click', async (e) => {
   const shortcutId = icon.dataset.shortcutId;
   if (!url) return;
 
-  // Open the URL
+  const allTabs = await chrome.tabs.query({});
+  const currentWindow = await chrome.windows.getCurrent();
+  const normalizedUrl = normalizeShortcutUrl(url);
+  const prefixMatches = getShortcutPrefixMatches(url, allTabs);
+
+  let existingTab = null;
+  if (prefixMatches.length === 1) {
+    existingTab = prefixMatches[0];
+  } else if (prefixMatches.length > 1) {
+    existingTab = prefixMatches.find(tab => normalizeShortcutUrl(tab.url) === normalizedUrl) || null;
+  }
+
+  if (existingTab) {
+    const tabToFocus = pickTabToFocus(prefixMatches.length === 1 ? prefixMatches : [existingTab], currentWindow.id);
+    await chrome.tabs.update(tabToFocus.id, { active: true });
+    await chrome.windows.update(tabToFocus.windowId, { focused: true });
+    await updateShortcutFavicon(shortcutId, tabToFocus.favIconUrl);
+    return;
+  }
+
   const tab = await chrome.tabs.create({ url });
 
   // Listen for the tab to load, then get the favicon and update the shortcut
@@ -2196,18 +2252,8 @@ document.addEventListener('click', async (e) => {
 
       // Get the favicon from the tab
       chrome.tabs.get(tabId, async (updatedTab) => {
-        if (!updatedTab || !updatedTab.favIconUrl) return;
-        if (!updatedTab.favIconUrl || !updatedTab.favIconUrl.startsWith('https://')) return;
-
-        // Update the shortcut with the new favicon
-        const shortcuts = await getShortcuts();
-        const idx = shortcuts.findIndex(s => s.id === shortcutId);
-        if (idx !== -1 && shortcuts[idx].faviconUrl !== updatedTab.favIconUrl) {
-          shortcuts[idx].faviconUrl = updatedTab.favIconUrl;
-          await saveShortcuts(shortcuts);
-          // Re-render shortcuts to show the new icon
-          renderShortcuts();
-        }
+        if (!updatedTab) return;
+        await updateShortcutFavicon(shortcutId, updatedTab.favIconUrl);
       });
     }
   });
