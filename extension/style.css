@@ -1628,7 +1628,8 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 
 /* Open tabs column keeps the grid layout */
 .active-section {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   margin-bottom: 20px;
 }
 
