@@ -170,6 +170,8 @@ header {
   padding: 6px;
   background: transparent;
   position: relative;
+  touch-action: none;
+  user-select: none;
 }
 
 .shortcut-icon:hover {
@@ -183,10 +185,16 @@ header {
 
 .shortcut-icon.dragging {
   cursor: grabbing;
-  opacity: 0.7;
-  transform: scale(1.1);
-  z-index: 100;
-  box-shadow: 0 8px 24px var(--shadow);
+  opacity: 0.92;
+  z-index: 1000;
+  box-shadow: 0 12px 28px var(--shadow);
+  /* Dragged icon uses inline transform to follow pointer; don't animate it. */
+  transition: box-shadow 0.15s, opacity 0.15s;
+}
+
+.shortcut-icon.returning {
+  transition: transform 0.22s cubic-bezier(.2,.8,.2,1), box-shadow 0.22s, opacity 0.22s;
+  pointer-events: none;
 }
 
 .shortcut-icon .shortcut-img-box {

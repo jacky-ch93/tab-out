@@ -2118,7 +2118,6 @@ async function renderShortcuts() {
       data-action="shortcut-open"
       data-shortcut-url="${safeUrl}"
       data-shortcut-id="${shortcut.id}"
-      draggable="true"
       title="${safeTitle}">
       <div class="shortcut-img-box">
         ${faviconUrl
@@ -2135,104 +2134,213 @@ async function renderShortcuts() {
 }
 
 /* ----------------------------------------------------------------
-   SHORTCUTS DRAG AND DROP — Reorder shortcuts with real-time movement
+   SHORTCUTS DRAG AND DROP — Pointer Events + FLIP animation
    ---------------------------------------------------------------- */
 let draggedShortcut = null;
-let dragStartIndex = -1;
+let dragPointerId = null;
 let dragStartX = 0;
 let dragStartY = 0;
+let dragPointerOffsetX = 0;
+let dragPointerOffsetY = 0;
+let dragStartIndex = -1;
+let dragCurrentIndex = -1;
 let shortcutWasDragged = false;
 let suppressShortcutClick = false;
 const shortcutDragThreshold = 4;
+const SHORTCUT_FLIP_MS = 220;
 
 function setupShortcutDragDrop() {
   const container = document.getElementById('shortcutsIcons');
   if (!container) return;
 
   const icons = container.querySelectorAll('.shortcut-icon');
-
-  icons.forEach((icon, index) => {
-    icon.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return; // Only left click
-
-      draggedShortcut = icon;
-      dragStartIndex = index;
-      dragStartX = e.clientX;
-      dragStartY = e.clientY;
-      shortcutWasDragged = false;
-      icon.classList.add('dragging');
-
-      // Prevent text selection during drag
-      e.preventDefault();
-    });
+  icons.forEach((icon) => {
+    icon.addEventListener('pointerdown', onShortcutPointerDown);
   });
 }
 
-document.addEventListener('mousemove', (e) => {
-  if (!draggedShortcut) return;
+function onShortcutPointerDown(e) {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  if (draggedShortcut) return;
+
+  const icon = e.currentTarget;
+  const container = icon.parentElement;
+  if (!container) return;
+
+  draggedShortcut = icon;
+  dragPointerId = e.pointerId;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  shortcutWasDragged = false;
+
+  const icons = Array.from(container.querySelectorAll('.shortcut-icon'));
+  dragStartIndex = icons.indexOf(icon);
+  dragCurrentIndex = dragStartIndex;
+
+  // Record the offset from cursor to icon's top-left so we can follow the pointer
+  const rect = icon.getBoundingClientRect();
+  dragPointerOffsetX = e.clientX - rect.left;
+  dragPointerOffsetY = e.clientY - rect.top;
+
+  // Listen on document so we keep receiving events even if the pointer leaves the icon.
+  document.addEventListener('pointermove', onShortcutPointerMove);
+  document.addEventListener('pointerup', onShortcutPointerUp);
+  document.addEventListener('pointercancel', onShortcutPointerUp);
+
+  e.preventDefault();
+}
+
+function onShortcutPointerMove(e) {
+  if (!draggedShortcut || e.pointerId !== dragPointerId) return;
 
   if (!shortcutWasDragged) {
-    const movedX = Math.abs(e.clientX - dragStartX);
-    const movedY = Math.abs(e.clientY - dragStartY);
-    if (movedX >= shortcutDragThreshold || movedY >= shortcutDragThreshold) {
-      shortcutWasDragged = true;
-    }
+    const dx0 = Math.abs(e.clientX - dragStartX);
+    const dy0 = Math.abs(e.clientY - dragStartY);
+    if (dx0 < shortcutDragThreshold && dy0 < shortcutDragThreshold) return;
+
+    // Begin actual drag: mark as dragging (CSS only adds shadow/opacity; no layout change).
+    shortcutWasDragged = true;
+    draggedShortcut.classList.add('dragging');
   }
 
+  // Make the icon follow the pointer using transform.
+  // Measure the natural slot rect by temporarily clearing the transform — this
+  // is robust when the icon gets moved to a new slot in the DOM mid-drag.
+  draggedShortcut.style.transform = '';
+  const natural = draggedShortcut.getBoundingClientRect();
+  const targetX = e.clientX - dragPointerOffsetX;
+  const targetY = e.clientY - dragPointerOffsetY;
+  const tx = targetX - natural.left;
+  const ty = targetY - natural.top;
+  draggedShortcut.style.transform = `translate(${tx}px, ${ty}px) scale(1.06)`;
+
+  // Find new index using midpoint of siblings
   const container = document.getElementById('shortcutsIcons');
-  const icons = Array.from(container.querySelectorAll('.shortcut-icon'));
+  if (!container) return;
+  const siblings = Array.from(container.querySelectorAll('.shortcut-icon'))
+    .filter(el => el !== draggedShortcut);
 
-  // Find which icon we're hovering over
-  let hoverIndex = -1;
-  for (let i = 0; i < icons.length; i++) {
-    const iconRect = icons[i].getBoundingClientRect();
-    if (e.clientX >= iconRect.left && e.clientX <= iconRect.right &&
-        e.clientY >= iconRect.top && e.clientY <= iconRect.bottom) {
-      hoverIndex = i;
-      break;
+  let newIndex = siblings.length; // default to end
+  for (let i = 0; i < siblings.length; i++) {
+    const r = siblings[i].getBoundingClientRect();
+    const midX = r.left + r.width / 2;
+    const midY = r.top + r.height / 2;
+    const sameRow = e.clientY >= r.top && e.clientY <= r.bottom;
+    if (sameRow) {
+      if (e.clientX < midX) { newIndex = i; break; }
+      newIndex = i + 1;
+    } else if (e.clientY < midY) {
+      newIndex = i; break;
     }
   }
 
-  if (hoverIndex !== -1 && hoverIndex !== dragStartIndex) {
-    // Reorder visually
-    const movedIcon = icons.splice(dragStartIndex, 1)[0];
-    icons.splice(hoverIndex, 0, movedIcon);
-
-    // Update DOM order
-    icons.forEach(icon => container.appendChild(icon));
-
-    dragStartIndex = hoverIndex;
+  if (newIndex !== dragCurrentIndex) {
+    reorderWithFlip(container, draggedShortcut, siblings, newIndex);
+    dragCurrentIndex = newIndex;
+    // Natural slot moved — recompute translate so the icon stays under the cursor.
+    draggedShortcut.style.transform = '';
+    const natural2 = draggedShortcut.getBoundingClientRect();
+    const tx2 = targetX - natural2.left;
+    const ty2 = targetY - natural2.top;
+    draggedShortcut.style.transform = `translate(${tx2}px, ${ty2}px) scale(1.06)`;
   }
-});
+}
 
-document.addEventListener('mouseup', async () => {
-  if (!draggedShortcut) return;
+function playFlip(elements, firstRects) {
+  elements.forEach(el => {
+    const first = firstRects.get(el);
+    if (!first) return;
+    const last = el.getBoundingClientRect();
+    const dx = first.left - last.left;
+    const dy = first.top - last.top;
+    if (dx === 0 && dy === 0) return;
+    el.style.transition = 'none';
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    // Force reflow, then animate back to 0
+    // eslint-disable-next-line no-unused-expressions
+    el.getBoundingClientRect();
+    el.style.transition = `transform ${SHORTCUT_FLIP_MS}ms cubic-bezier(.2,.8,.2,1)`;
+    el.style.transform = '';
+    const clear = () => {
+      el.style.transition = '';
+      el.removeEventListener('transitionend', clear);
+    };
+    el.addEventListener('transitionend', clear);
+  });
+}
 
-  draggedShortcut.classList.remove('dragging');
+function reorderWithFlip(container, draggedIcon, siblings, newIndex) {
+  // FLIP: record FIRST positions of all siblings
+  const firstRects = new Map();
+  siblings.forEach(el => firstRects.set(el, el.getBoundingClientRect()));
+
+  // Move dragged icon in DOM to the new index (relative to siblings)
+  const ref = siblings[newIndex] || null;
+  if (ref) {
+    container.insertBefore(draggedIcon, ref);
+  } else {
+    container.appendChild(draggedIcon);
+  }
+
+  // LAST + INVERT + PLAY on the siblings (not the dragged one)
+  playFlip(siblings, firstRects);
+}
+
+async function onShortcutPointerUp(e) {
+  if (!draggedShortcut || e.pointerId !== dragPointerId) return;
+
+  const icon = draggedShortcut;
+  document.removeEventListener('pointermove', onShortcutPointerMove);
+  document.removeEventListener('pointerup', onShortcutPointerUp);
+  document.removeEventListener('pointercancel', onShortcutPointerUp);
+
+  const wasDragged = shortcutWasDragged;
+
   draggedShortcut = null;
+  dragPointerId = null;
+  shortcutWasDragged = false;
 
-  if (shortcutWasDragged) {
-    suppressShortcutClick = true;
+  if (wasDragged) {
+    // Animate the icon from its current (offset) position back into its natural slot.
+    icon.classList.remove('dragging');
+    icon.classList.add('returning');
+    // Force transition on transform
     requestAnimationFrame(() => {
-      suppressShortcutClick = false;
+      icon.style.transform = '';
     });
+    const clear = () => {
+      icon.classList.remove('returning');
+      icon.style.transition = '';
+      icon.removeEventListener('transitionend', clear);
+    };
+    icon.addEventListener('transitionend', clear);
+
+    // Suppress the click-to-open that would otherwise fire after pointerup
+    suppressShortcutClick = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      suppressShortcutClick = false;
+    }));
+  } else {
+    // No actual drag; ensure no lingering inline styles.
+    icon.style.transform = '';
   }
 
-  // Save the new order
+  if (!wasDragged) return;
+
+  // Persist the new order
   const container = document.getElementById('shortcutsIcons');
+  if (!container) return;
   const icons = Array.from(container.querySelectorAll('.shortcut-icon'));
-  const newOrder = icons.map(icon => icon.dataset.shortcutId);
+  const newOrder = icons.map(el => el.dataset.shortcutId);
 
   const shortcuts = await getShortcuts();
   const reordered = [];
   for (const id of newOrder) {
-    const shortcut = shortcuts.find(s => s.id === id);
-    if (shortcut) reordered.push(shortcut);
+    const s = shortcuts.find(x => x.id === id);
+    if (s) reordered.push(s);
   }
-
-  shortcutWasDragged = false;
   await saveShortcuts(reordered);
-});
+}
 
 /* ----------------------------------------------------------------
    SHORTCUTS EVENT HANDLERS
