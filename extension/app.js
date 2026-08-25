@@ -2082,6 +2082,101 @@ function getFaviconForShortcut(url) {
   return '';
 }
 
+
+/* ----------------------------------------------------------------
+   SHORTCUT FAVICON CACHE — embed images as data URIs in
+   chrome.storage.local so icons survive offline.
+
+   Why data URIs (instead of just keeping the remote URL):
+     The previous design stored the favicon URL in chrome.storage.sync
+     and rendered it directly via <img src>. Whenever the user went
+     offline, the <img> failed to load and the icon disappeared
+     (the letter fallback kicked in). By downloading the image bytes
+     and embedding them as a data URI, we render the icon without
+     any network access — once cached, always visible.
+
+   Why chrome.storage.local (instead of sync):
+     chrome.storage.sync has an 8 KB per-item limit which is far too
+     small for a base64-encoded PNG/ICO. local storage has a 5 MB
+     total budget, plenty of room for hundreds of shortcut favicons.
+   ---------------------------------------------------------------- */
+
+const SHORTCUT_FAVICON_CACHE_KEY = 'shortcutFavicons';
+
+/**
+ * fetchFaviconAsDataUri(url)
+ *
+ * Downloads a favicon image and converts it to a base64 data URI.
+ * Returns null on any failure (network, CORS, non-https, invalid response).
+ */
+async function fetchFaviconAsDataUri(url) {
+  if (!url || !url.startsWith('https://')) return null;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('FileReader failed'));
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * cacheShortcutFaviconDataUri(shortcutId, dataUri)
+ *
+ * Persists a data URI for the given shortcut into chrome.storage.local.
+ * Silently no-ops on failure (storage quota, etc.) — the URL fallback
+ * will still display when online.
+ */
+async function cacheShortcutFaviconDataUri(shortcutId, dataUri) {
+  if (!shortcutId || !dataUri) return;
+  try {
+    const { [SHORTCUT_FAVICON_CACHE_KEY]: cache = {} } =
+      await chrome.storage.local.get(SHORTCUT_FAVICON_CACHE_KEY);
+    cache[shortcutId] = dataUri;
+    await chrome.storage.local.set({ [SHORTCUT_FAVICON_CACHE_KEY]: cache });
+  } catch (err) {
+    console.warn('[tab-out] Failed to cache shortcut favicon:', err);
+  }
+}
+
+/**
+ * getCachedShortcutFavicons()
+ *
+ * Returns the full map of cached data URIs (keyed by shortcut ID).
+ * Read once at render time, not per-shortcut, to avoid N storage reads.
+ */
+async function getCachedShortcutFavicons() {
+  try {
+    const { [SHORTCUT_FAVICON_CACHE_KEY]: cache = {} } =
+      await chrome.storage.local.get(SHORTCUT_FAVICON_CACHE_KEY);
+    return cache || {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * prefetchShortcutFavicon(shortcutId, faviconUrl)
+ *
+ * Fire-and-forget helper: download a favicon and store it as a data URI
+ * so a freshly-added shortcut already has its icon cached offline, even
+ * before the user clicks it for the first time.
+ */
+async function prefetchShortcutFavicon(shortcutId, faviconUrl) {
+  if (!shortcutId || !faviconUrl) return;
+  const dataUri = await fetchFaviconAsDataUri(faviconUrl);
+  if (!dataUri) return;
+  await cacheShortcutFaviconDataUri(shortcutId, dataUri);
+  renderShortcuts();
+}
+
+
 /**
  * getLetterForShortcut(title)
  *
@@ -2101,6 +2196,7 @@ async function renderShortcuts() {
   if (!container) return;
 
   const shortcuts = await getShortcuts();
+  const faviconCache = await getCachedShortcutFavicons();
 
   if (shortcuts.length === 0) {
     container.innerHTML = `<span class="shortcuts-empty">右键点击添加快捷方式</span>`;
@@ -2110,7 +2206,12 @@ async function renderShortcuts() {
   container.innerHTML = shortcuts.map(shortcut => {
     const safeUrl = (shortcut.url || '').replace(/"/g, '&quot;');
     const safeTitle = (shortcut.title || '').replace(/"/g, '&quot;');
-    const faviconUrl = shortcut.faviconUrl || getFaviconForShortcut(shortcut.url);
+    // Priority: locally cached data URI → synced URL → Google API fallback.
+    // The data URI keeps the icon visible offline; the URL/API only
+    // matter until the cache is populated.
+    const faviconUrl = faviconCache[shortcut.id]
+      || shortcut.faviconUrl
+      || getFaviconForShortcut(shortcut.url);
     const safeFavicon = faviconUrl.replace(/"/g, '&quot;');
     const letter = getLetterForShortcut(shortcut.title);
 
@@ -2347,8 +2448,11 @@ async function onShortcutPointerUp(e) {
    ---------------------------------------------------------------- */
 
 async function updateShortcutFavicon(shortcutId, faviconUrl) {
-  if (!shortcutId || !faviconUrl || !faviconUrl.startsWith('https://')) return;
+  if (!shortcutId) return;
+  if (!faviconUrl || !faviconUrl.startsWith('https://')) return;
 
+  // Persist the remote URL to sync (existing behaviour) so other
+  // devices inherit the preference.
   const shortcuts = await getShortcuts();
   const idx = shortcuts.findIndex(s => s.id === shortcutId);
   if (idx === -1) return;
@@ -2359,6 +2463,16 @@ async function updateShortcutFavicon(shortcutId, faviconUrl) {
     await saveShortcuts(shortcuts);
     renderShortcuts();
   }
+
+  // Download the image and cache it locally so it survives offline.
+  // Fire-and-forget so the caller doesn't block on the network; once
+  // the data URI is ready we re-render to switch from URL → data URI.
+  (async () => {
+    const dataUri = await fetchFaviconAsDataUri(faviconUrl);
+    if (!dataUri) return;
+    await cacheShortcutFaviconDataUri(shortcutId, dataUri);
+    renderShortcuts();
+  })();
 }
 
 // Left-click on shortcut icon: open URL
@@ -2594,9 +2708,17 @@ async function submitShortcutForm() {
   if (currentEditingId) {
     await updateShortcut(currentEditingId, url, title, faviconUrl);
     showToast('Shortcut updated');
+    // If the URL changed, the cached icon may no longer match — try to
+    // re-fetch so the new favicon is ready offline as well.
+    if (existingShortcut?.url !== url.trim()) {
+      prefetchShortcutFavicon(currentEditingId, faviconUrl);
+    }
   } else {
-    await addShortcut(url, title, faviconUrl);
+    const newId = await addShortcut(url, title, faviconUrl);
     showToast('Shortcut added');
+    // Pre-fetch the favicon so the new shortcut has its icon cached
+    // offline even before the user clicks it for the first time.
+    prefetchShortcutFavicon(newId, faviconUrl);
   }
 
   closeShortcutForm();
