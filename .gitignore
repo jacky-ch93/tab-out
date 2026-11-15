@@ -9,3 +9,6 @@ docs/superpowers/
 
 # Personal config (landing page patterns, etc.) — never push to GitHub
 extension/config.local.js
+
+# Local data backups taken before changing the extension ID.
+backups/

@@ -290,6 +290,14 @@ header {
 .shortcuts-transfer[open] > summary { margin-bottom: 12px; }
 .shortcuts-cloud-actions { flex-wrap: wrap; margin-top: 12px; }
 .shortcuts-cloud p { overflow-wrap: anywhere; }
+.shortcuts-drive-setup { padding: 12px; margin: 12px 0; border: 1px solid var(--warm-gray); border-radius: 6px; }
+.shortcuts-drive-setup h4 { margin: 0; font-size: 13px; }
+.shortcuts-drive-setup ol { padding-left: 20px; margin: 8px 0; font-size: 12px; line-height: 1.7; }
+.shortcuts-drive-setup li + li { margin-top: 8px; }
+.shortcuts-drive-setup a { color: var(--ink); text-decoration: underline; }
+.shortcuts-drive-setup input { width: 100%; min-width: 0; box-sizing: border-box; padding: 8px; margin-bottom: 10px; font: inherit; font-size: 12px; color: var(--ink); background: var(--card-bg); border: 1px solid var(--warm-gray); border-radius: 6px; }
+.shortcuts-drive-setup .shortcuts-transfer-actions { flex-wrap: wrap; }
+#shortcutsDriveSetupStatus[data-error="true"] { color: var(--status-abandoned); }
 .shortcuts-transfer label { display: block; font-size: 12px; margin-bottom: 6px; }
 .shortcuts-transfer select {
   width: 100%;

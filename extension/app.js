@@ -2066,7 +2066,6 @@ function mergeShortcutsConfig(existing, imported, mode) {
   return result;
 }
 
-const SHORTCUTS_CLOUD_KEY = 'shortcutsCloud';
 const SHORTCUTS_CLOUD_BUTTONS = ['shortcutsCloudUploadBtn', 'shortcutsCloudDownloadBtn', 'shortcutsCloudMergeBtn'];
 let shortcutsCloudBusy = false;
 
@@ -2075,13 +2074,12 @@ async function getShortcutsSyncAccount() {
     throw new Error('请在扩展管理页重新加载 Tab Out，以启用 Chrome 账户权限。');
   }
   if (chrome.permissions?.contains && !await chrome.permissions.contains({ permissions: ['identity.email'] })) {
-    throw new Error('Chrome 账户读取权限尚未生效。请在 chrome://extensions 重新加载 Tab Out，再刷新本页；打开同步设置页不会授予此权限。');
+    throw new Error('Chrome 账户读取权限尚未生效。请在 chrome://extensions 重新加载 Tab Out，再刷新本页并连接 Google Drive。');
   }
-  // SYNC only returns accounts with full Sync consent. A signed-in Chrome
-  // profile can use the newer account storage without that legacy consent.
-  // Identify the primary account; Chrome still controls actual sync transport.
+  // Bind Drive authorization and every request to the signed-in Chrome profile.
+  // Chrome Sync consent is unrelated to this direct Drive API transport.
   const account = await chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' });
-  if (!account.id) throw new Error('未检测到 Chrome 主账户。请从 Chrome 右上角头像登录浏览器（仅登录 Gmail 网页不算），然后点击「重新检查账户」。');
+  if (!account.id) throw new Error('未检测到 Chrome 主账户。请从 Chrome 右上角头像登录浏览器（仅登录 Gmail 网页不算），然后点击「连接 Google Drive」。');
   return account;
 }
 
@@ -2090,22 +2088,118 @@ async function checkShortcutsSyncAccount(expected) {
   if (current.id !== expected.id) throw new Error('Chrome 账户已切换，请重新打开面板后重试。');
 }
 
-async function readShortcutsCloud(account) {
-  const snapshot = (await chrome.storage.sync.get(SHORTCUTS_CLOUD_KEY))[SHORTCUTS_CLOUD_KEY];
-  if (snapshot !== undefined) {
-    if (!snapshot || snapshot.accountId !== account.id) {
-      throw new Error('当前云端副本不属于此 Chrome 账户，请等待账户同步完成后重试。');
+function requireDriveConfiguration() {
+  const oauth = chrome.runtime.getManifest().oauth2;
+  if (!oauth?.client_id || !/^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/.test(oauth.client_id)) {
+    const setup = document.getElementById('shortcutsDriveSetup');
+    if (setup) {
+      setup.hidden = false;
+      document.getElementById('shortcutsDriveExtensionId').value = chrome.runtime.id;
     }
-    return {
-      shortcuts: parseShortcutsConfig(JSON.stringify(snapshot.config)),
-      updatedAt: snapshot.updatedAt,
-    };
+    throw new Error('Google Drive 尚未配置 OAuth 客户端 ID。请完成上方「首次连接 Google Drive」中的步骤；当前未连接云端。');
   }
-  // Older releases stored the array directly in sync. Read it without deleting
-  // or replacing it, so upgrading never erases an existing account backup.
-  const { shortcuts: legacy } = await chrome.storage.sync.get('shortcuts');
-  if (!Array.isArray(legacy)) return null;
-  return { shortcuts: parseShortcutsConfig(JSON.stringify(createShortcutsConfig(legacy))) };
+  const setup = document.getElementById('shortcutsDriveSetup');
+  if (setup) setup.hidden = true;
+}
+
+function buildDriveManifest(clientId, original) {
+  if (!/^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/.test(clientId)) {
+    throw new Error('请粘贴有效的 OAuth 客户端 ID，应以 .apps.googleusercontent.com 结尾。');
+  }
+  const current = chrome.runtime.getManifest();
+  if (!original || original.name !== current.name || original.manifest_version !== 3) {
+    throw new Error('所选文件不是 Tab Out 的扩展配置，请选择 Tab Out 的 extension/manifest.json。');
+  }
+  return {
+    ...original,
+    permissions: [...new Set([...(original.permissions || []), 'identity', 'identity.email'])],
+    host_permissions: [...new Set([...(original.host_permissions || []), 'https://www.googleapis.com/*'])],
+    oauth2: { client_id: clientId, scopes: [TabOutDrive.scope] },
+  };
+}
+
+function setDriveSetupStatus(message, error = false) {
+  const status = document.getElementById('shortcutsDriveSetupStatus');
+  if (!status) return;
+  status.textContent = message;
+  status.dataset.error = String(error);
+}
+
+async function saveDriveConfiguration(download = false) {
+  const clientId = document.getElementById('shortcutsDriveClientId').value.trim();
+  try {
+    let manifest = buildDriveManifest(clientId, chrome.runtime.getManifest());
+    if (!download) {
+      if (!window.showOpenFilePicker) {
+        throw new Error('当前浏览器不支持直接更新文件。请点击「下载扩展配置（备用）」，再替换扩展目录中的 manifest.json。');
+      }
+      const [handle] = await window.showOpenFilePicker({
+        multiple: false,
+        types: [{ description: 'Tab Out 扩展配置 manifest.json', accept: { 'application/json': ['.json'] } }],
+      });
+      if (handle.name !== 'manifest.json') throw new Error('请选择扩展目录中的 manifest.json，不是快捷方式导出的 JSON。');
+      let original;
+      try { original = JSON.parse(await (await handle.getFile()).text()); }
+      catch { throw new Error('所选文件不是有效的扩展配置，未修改文件。'); }
+      manifest = buildDriveManifest(clientId, original);
+      const writable = await handle.createWritable();
+      try {
+        await writable.write(JSON.stringify(manifest, null, 2) + '\n');
+        await writable.close();
+      } catch (error) {
+        try { await writable.abort(); } catch { /* Preserve the original error. */ }
+        throw error;
+      }
+      const saved = JSON.parse(await (await handle.getFile()).text());
+      if (saved.oauth2?.client_id !== clientId) throw new Error('文件写入校验失败，请使用下载配置的方式重试。');
+      setDriveSetupStatus('扩展配置已保存。请在 chrome://extensions 重新加载 Tab Out，再刷新本页并连接 Google Drive。');
+    } else {
+      const blob = new Blob([JSON.stringify(manifest, null, 2) + '\n'], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'manifest.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setDriveSetupStatus('配置文件已下载。请用它替换 Tab Out 的 extension/manifest.json，然后在 chrome://extensions 重新加载插件，再刷新本页连接 Google Drive。');
+    }
+  } catch (error) {
+    setDriveSetupStatus(error.name === 'AbortError' ? '已取消，配置未更改。' : error.message, error.name !== 'AbortError');
+  }
+}
+
+document.getElementById('shortcutsDriveSaveConfigBtn')?.addEventListener('click', () => saveDriveConfiguration());
+document.getElementById('shortcutsDriveDownloadConfigBtn')?.addEventListener('click', () => saveDriveConfiguration(true));
+
+function createShortcutsDrive(account, interactive = false) {
+  requireDriveConfiguration();
+  return new TabOutDrive({
+    checkAccount: () => checkShortcutsSyncAccount(account),
+    authorize: async () => {
+      try {
+        const result = await chrome.identity.getAuthToken({
+          interactive, account: { id: account.id }, scopes: [TabOutDrive.scope],
+        });
+        interactive = false; // Never repeatedly prompt during token refresh.
+        const token = typeof result === 'string' ? result : result?.token;
+        if (!token || (result.grantedScopes && !result.grantedScopes.includes(TabOutDrive.scope))) {
+          throw new Error('scope');
+        }
+        return token;
+      } catch {
+        throw new Error('尚未获得 Google Drive 授权。请点击「连接 Google Drive」完成授权；若失败，请检查 OAuth 客户端及 Drive API 配置。');
+      }
+    },
+    invalidate: token => chrome.identity.removeCachedAuthToken({ token }),
+  });
+}
+
+async function readShortcutsCloud(account, interactive = false) {
+  const remote = await createShortcutsDrive(account, interactive).read();
+  if (!remote) return null;
+  return { ...remote, shortcuts: parseShortcutsConfig(JSON.stringify(remote.config)) };
 }
 
 function setShortcutsCloudStatus(message, error = false) {
@@ -2122,20 +2216,21 @@ async function refreshShortcutsCloudState() {
   let signedIn = false;
   let errorMessage = '';
   try {
+    requireDriveConfiguration();
     const account = await getShortcutsSyncAccount();
     signedIn = true;
-    accountEl.textContent = `Chrome 账户：${account.email || '已登录'}`;
+    accountEl.textContent = `Google Drive 账户：${account.email || '已登录'}`;
     const cloud = await readShortcutsCloud(account);
     await checkShortcutsSyncAccount(account);
     const date = cloud?.updatedAt ? new Date(cloud.updatedAt) : null;
-    const time = date && !Number.isNaN(date.getTime()) ? ` · 提交时间 ${date.toLocaleString()}` : '';
+    const time = date && !Number.isNaN(date.getTime()) ? ` · 云端修改时间 ${date.toLocaleString()}` : '';
     summaryEl.textContent = cloud
-      ? `云端副本：${cloud.shortcuts.length} 个快捷方式${time}`
-      : '尚无云端副本，可先上传本地配置。';
+      ? `Google Drive 实时读取：${cloud.shortcuts.length} 个快捷方式${time}`
+      : 'Google Drive 尚无配置文件，可先上传本地配置。';
   } catch (error) {
     errorMessage = error.message;
     summaryEl.textContent = errorMessage;
-    if (!signedIn) accountEl.textContent = '无法读取 Chrome 账户';
+    if (!signedIn) accountEl.textContent = 'Google Drive 未连接';
   }
   summaryEl.dataset.error = String(!!errorMessage);
   // Keep actions clickable so account/permission/missing-cloud problems produce
@@ -2156,25 +2251,20 @@ async function syncShortcutsCloud(mode) {
     const button = document.getElementById(id);
     if (button) button.disabled = true;
   });
-  setShortcutsCloudStatus('正在处理…');
+  setShortcutsCloudStatus('正在请求 Google Drive 云端…');
   try {
+    requireDriveConfiguration();
     const account = await getShortcutsSyncAccount();
     if (mode === 'upload') {
       const local = await getShortcuts();
       const config = createShortcutsConfig(local);
       // Use the same validation as file import before writing the cloud copy.
       parseShortcutsConfig(JSON.stringify(config));
-      const snapshot = { accountId: account.id, updatedAt: new Date().toISOString(), config };
-      const bytes = new TextEncoder().encode(SHORTCUTS_CLOUD_KEY + JSON.stringify(snapshot)).length;
-      if (bytes > (chrome.storage.sync.QUOTA_BYTES_PER_ITEM || 8192)) {
-        throw new Error('配置超出 Chrome 同步容量（每份约 8 KB），请精简后重试；仍可使用文件导出。');
-      }
-      await checkShortcutsSyncAccount(account);
-      await chrome.storage.sync.set({ [SHORTCUTS_CLOUD_KEY]: snapshot });
-      setShortcutsCloudStatus(`已提交 ${local.length} 个快捷方式至 Chrome 同步。联网且扩展程序同步开启时，Chrome 会继续传到其他设备。`);
+      await createShortcutsDrive(account, true).write(config);
+      setShortcutsCloudStatus(`已保存 ${local.length} 个快捷方式到 Google Drive，并从服务器回读校验成功。`);
     } else if (mode === 'download' || mode === 'merge') {
-      const cloud = await readShortcutsCloud(account);
-      if (!cloud) throw new Error('尚无云端副本，本地配置未更改。请先在来源设备上传并等待 Chrome 同步。');
+      const cloud = await readShortcutsCloud(account, true);
+      if (!cloud) throw new Error('Google Drive 尚无配置文件，本地配置未更改。请先在来源设备上传到 Google Drive。');
       const local = await getShortcuts();
       // Start from an empty set so duplicates on either side are removed.
       // First occurrence wins: local names, IDs, and order are retained.
@@ -2187,13 +2277,13 @@ async function syncShortcutsCloud(mode) {
       const panel = document.getElementById('shortcutsEditPanel');
       if (panel?.classList.contains('visible')) await openShortcutsEditPanel();
       setShortcutsCloudStatus(mode === 'download'
-        ? `已用云端副本覆盖本地，共 ${next.length} 个快捷方式。`
+        ? `已从 Google Drive 服务器下载并覆盖本地，共 ${next.length} 个快捷方式。`
         : `已将本地 ${local.length} 个与云端 ${cloud.shortcuts.length} 个取并集，共 ${next.length} 个。云端未更改。`);
     } else {
       throw new Error('未知的同步操作。');
     }
   } catch (error) {
-    setShortcutsCloudStatus(`操作未完成：${error.message || '请检查 Chrome 同步设置或存储空间后重试。'}`, true);
+    setShortcutsCloudStatus(`操作未完成：${error.message || '请检查网络、Google Drive 授权或存储空间后重试。'}`, true);
   } finally {
     shortcutsCloudBusy = false;
     await refreshShortcutsCloudState();
@@ -2203,45 +2293,40 @@ async function syncShortcutsCloud(mode) {
 document.getElementById('shortcutsCloudUploadBtn')?.addEventListener('click', () => syncShortcutsCloud('upload'));
 document.getElementById('shortcutsCloudDownloadBtn')?.addEventListener('click', () => syncShortcutsCloud('download'));
 document.getElementById('shortcutsCloudMergeBtn')?.addEventListener('click', () => syncShortcutsCloud('merge'));
-async function openChromeSyncSettings() {
-  const button = document.getElementById('shortcutsSyncSettingsBtn');
-  if (button.disabled) return;
-  document.getElementById('shortcutsSyncHelp').hidden = false;
-  button.disabled = true;
-  setShortcutsCloudStatus('正在打开 Chrome 同步设置…');
+async function connectShortcutsDrive() {
+  if (shortcutsCloudBusy) return;
+  shortcutsCloudBusy = true;
+  setShortcutsCloudStatus('正在连接 Google Drive…');
   try {
-    const tab = await chrome.tabs.create({ url: 'chrome://settings/syncSetup', active: true });
-    // Bring the settings window forward even when Tab Out is in another window.
-    try {
-      if (tab?.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
-    } catch {
-      // The settings tab still exists if focusing its window is unavailable.
-    }
-    setShortcutsCloudStatus('已打开 Chrome 同步设置。完成登录及同步设置后，请返回点击「重新检查账户」。');
+    requireDriveConfiguration();
+    const account = await getShortcutsSyncAccount();
+    // A real API read verifies that authorization and Drive access both work.
+    const remote = await readShortcutsCloud(account, true);
+    setShortcutsCloudStatus(remote
+      ? `Google Drive 已连接，服务器上有 ${remote.shortcuts.length} 个快捷方式。`
+      : 'Google Drive 已连接，尚无配置文件。请点击「上传云端」保存本地配置。');
   } catch (error) {
-    console.warn('[tab-out] Could not open Chrome sync settings:', error);
-    setShortcutsCloudStatus('未能自动打开设置。请复制上方地址到 Chrome 地址栏并回车，然后按说明登录及开启同步。', true);
+    setShortcutsCloudStatus(error.message, true);
   } finally {
-    button.disabled = false;
+    shortcutsCloudBusy = false;
+    await refreshShortcutsCloudState();
   }
 }
 
-document.getElementById('shortcutsSyncSettingsBtn')?.addEventListener('click', openChromeSyncSettings);
+document.getElementById('shortcutsDriveConnectBtn')?.addEventListener('click', connectShortcutsDrive);
 document.getElementById('shortcutsSyncRecheckBtn')?.addEventListener('click', async () => {
   const state = await refreshShortcutsCloudState();
-  setShortcutsCloudStatus(state?.errorMessage || '已检测到 Chrome 账户，可以上传；下载或合并需要已有云端副本。', !!state?.errorMessage);
+  setShortcutsCloudStatus(state?.errorMessage || '已直接向 Google Drive 服务器重新查询配置。', !!state?.errorMessage);
 });
 
-// Sync changes update the cloud summary only; they must never silently replace
-// the user's local shortcut list. Local edits in another window stay visible.
+// Local edits in another window stay visible. Legacy Chrome sync changes
+// must never be mistaken for a Google Drive download or replace local data.
 chrome.storage.onChanged?.addListener(async (changes, area) => {
   try {
     const panel = document.getElementById('shortcutsEditPanel');
     if (area === 'local' && changes.shortcuts) {
       await renderShortcuts();
       if (panel?.classList.contains('visible')) await openShortcutsEditPanel();
-    } else if (area === 'sync' && (changes[SHORTCUTS_CLOUD_KEY] || changes.shortcuts)) {
-      if (panel?.classList.contains('visible')) await refreshShortcutsCloudState();
     }
   } catch (error) { console.warn('[tab-out] Could not refresh shortcut storage:', error); }
 });
