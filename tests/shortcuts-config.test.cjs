@@ -341,6 +341,107 @@ test('favicon caching stays on the Chrome extension origin', async () => {
   assert.equal(requested.searchParams.get('pageUrl'), 'https://example.com');
 });
 
+test('shortcut icons list several sources so a blocked one does not blank the icon', async () => {
+  const h = await harness([]);
+  const candidates = vm.runInContext(
+    "getShortcutFaviconCandidates({ url: 'https://example.com/x', faviconUrl: 'https://example.com/icon.png' }, '')",
+    h.context,
+  );
+  assert.deepEqual(Array.from(candidates), [
+    'https://example.com/icon.png',
+    'https://example.com/favicon.ico',
+    'https://icons.duckduckgo.com/ip3/example.com.ico',
+    'https://www.google.com/s2/favicons?domain=example.com&sz=64',
+  ]);
+  // The cached data URI comes first, duplicates collapse, and unsafe schemes
+  // are dropped instead of ending up in an <img src>.
+  const withCache = vm.runInContext(
+    "getShortcutFaviconCandidates({ url: 'https://example.com', faviconUrl: 'javascript:alert(1)' }, 'data:image/png;base64,AAA')",
+    h.context,
+  );
+  assert.deepEqual(Array.from(withCache), [
+    'data:image/png;base64,AAA',
+    'https://example.com/favicon.ico',
+    'https://icons.duckduckgo.com/ip3/example.com.ico',
+    'https://www.google.com/s2/favicons?domain=example.com&sz=64',
+  ]);
+  // Google's service answers unknown domains with a placeholder globe rather
+  // than failing, so a stored Google URL must not shadow the real icon.
+  const storedGoogle = vm.runInContext(
+    "getShortcutFaviconCandidates({ url: 'https://example.com', faviconUrl: 'https://www.google.com/s2/favicons?domain=example.com&sz=64' }, '')",
+    h.context,
+  );
+  assert.deepEqual(Array.from(storedGoogle), [
+    'https://example.com/favicon.ico',
+    'https://icons.duckduckgo.com/ip3/example.com.ico',
+    'https://www.google.com/s2/favicons?domain=example.com&sz=64',
+  ]);
+});
+
+test('a failed icon source moves on to the next one before the letter appears', async () => {
+  const h = await harness([]);
+  const letter = { classList: { contains: name => name === 'shortcut-letter' }, style: {} };
+  const image = {
+    tagName: 'IMG',
+    src: 'https://a.example/icon.png',
+    style: {},
+    dataset: { imageFallback: 'letter', faviconSources: 'https://a.example/icon.png||https://b.example/icon.png||https://c.example/icon.png' },
+    nextElementSibling: letter,
+  };
+  h.context.probeImage = image;
+
+  vm.runInContext('handleImageError({ target: probeImage })', h.context);
+  assert.equal(image.src, 'https://b.example/icon.png');
+  assert.equal(image.dataset.faviconIndex, '1');
+  assert.equal(image.style.display, undefined);
+  assert.equal(letter.style.display, undefined);
+
+  vm.runInContext('handleImageError({ target: probeImage })', h.context);
+  assert.equal(image.src, 'https://c.example/icon.png');
+
+  // Sources exhausted: the image is hidden and the letter takes over.
+  vm.runInContext('handleImageError({ target: probeImage })', h.context);
+  assert.equal(image.src, 'https://c.example/icon.png');
+  assert.equal(image.style.display, 'none');
+  assert.equal(letter.style.display, 'flex');
+});
+
+test('an icon service placeholder is recognised and does not win over the real icon', async () => {
+  const h = await harness([]);
+  const probes = [];
+  h.context.Image = class {
+    constructor() { this.naturalWidth = 0; this.naturalHeight = 0; this.src = ''; probes.push(this); }
+  };
+
+  vm.runInContext('loadFaviconPlaceholderSize(FAVICON_SERVICES[0])', h.context);
+  assert.equal(probes.length, 1);
+  assert.match(probes[0].src, /tab-out\.invalid/);
+  probes[0].naturalWidth = 16;
+  probes[0].naturalHeight = 16;
+  probes[0].onload();
+
+  h.context.probeImage = {
+    getAttribute: () => 'https://www.google.com/s2/favicons?domain=example.com&sz=64',
+    naturalWidth: 16, naturalHeight: 16,
+  };
+  assert.equal(vm.runInContext('isFaviconPlaceholder(probeImage)', h.context), true);
+  h.context.probeImage.naturalWidth = 32;
+  assert.equal(vm.runInContext('isFaviconPlaceholder(probeImage)', h.context), false);
+
+  // A placeholder that loads successfully still moves on to the next source.
+  const letter = { classList: { contains: name => name === 'shortcut-letter' }, style: {} };
+  h.context.loadImage = {
+    tagName: 'IMG', style: {}, naturalWidth: 16, naturalHeight: 16,
+    src: 'https://www.google.com/s2/favicons?domain=example.com&sz=64',
+    getAttribute() { return this.src; },
+    dataset: { imageFallback: 'letter', faviconSources: 'https://www.google.com/s2/favicons?domain=example.com&sz=64||https://example.com/favicon.ico' },
+    nextElementSibling: letter,
+  };
+  vm.runInContext('handleImageLoad({ target: loadImage })', h.context);
+  assert.equal(h.context.loadImage.src, 'https://example.com/favicon.ico');
+  assert.equal(h.context.loadImage.style.display, undefined);
+});
+
 test('Drive rejects oversized data and refuses to follow unexpected request origins', async () => {
   const h = await harness([]);
   const client = new h.context.TabOutDrive({ authorize: async () => 'test-token', invalidate: async () => {}, checkAccount: async () => {} });

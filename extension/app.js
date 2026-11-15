@@ -17,16 +17,162 @@
 
 // Manifest V3 blocks inline onerror handlers. Capture image errors here so
 // dynamically rendered cards and shortcuts can fall back without CSP errors.
+// Icons carry their remaining sources in data-favicon-sources, so a source
+// that fails to load is replaced by the next one before anything is hidden.
 function handleImageError(event) {
   const image = event.target;
   if (image?.tagName !== 'IMG' || !image.dataset.imageFallback) return;
+  const next = nextFaviconSource(image);
+  if (next) {
+    image.src = next;
+    return;
+  }
+  hideShortcutIcon(image);
+}
+document.addEventListener('error', handleImageError, true);
+
+// Icon sources are tried in order. The list travels in a data attribute so a
+// rendered <img> can move on to the next source without extra bookkeeping.
+const FAVICON_SOURCE_SEPARATOR = '||';
+
+function faviconSourcesAttribute(urls) {
+  return urls.map(url => escapeShortcutHtml(url)).join(FAVICON_SOURCE_SEPARATOR);
+}
+
+function nextFaviconSource(image) {
+  const sources = (image.dataset.faviconSources || '').split(FAVICON_SOURCE_SEPARATOR).filter(Boolean);
+  const index = Number(image.dataset.faviconIndex || 0);
+  if (!sources.length || index + 1 >= sources.length) return '';
+  image.dataset.faviconIndex = String(index + 1);
+  return sources[index + 1];
+}
+
+/* ----------------------------------------------------------------
+   ICON SERVICE PLACEHOLDERS
+
+   The public icon services answer a domain they do not know with a generic
+   placeholder image instead of failing, so a placeholder would happily win
+   over the real icon behind it. The placeholder always has the same size,
+   so it is learned once per service and a candidate that matches it is
+   treated as "no icon here" and the next source is tried.
+   ---------------------------------------------------------------- */
+
+const FAVICON_SERVICES = [
+  { prefix: 'https://www.google.com/s2/favicons?', placeholder: 'https://www.google.com/s2/favicons?domain=tab-out.invalid&sz=64' },
+  { prefix: 'https://icons.duckduckgo.com/ip3/', placeholder: 'https://icons.duckduckgo.com/ip3/tab-out.invalid.ico' },
+];
+const faviconPlaceholderSizes = new Map();
+
+function faviconServiceFor(url) {
+  if (typeof url !== 'string') return null;
+  return FAVICON_SERVICES.find(service => url.startsWith(service.prefix)) || null;
+}
+
+/**
+ * loadFaviconPlaceholderSize(service)
+ *
+ * Loads the service's generic placeholder once and remembers its size.
+ * Always settles: a service that cannot be reached must not leave the
+ * promise pending, or whatever awaits it would hang.
+ */
+function loadFaviconPlaceholderSize(service) {
+  const cached = faviconPlaceholderSizes.get(service.prefix);
+  if (cached !== undefined) return Promise.resolve(cached);
+  if (typeof Image === 'undefined') return Promise.resolve(null);
+  return new Promise(resolve => {
+    const probe = new Image();
+    let settled = false;
+    const finish = size => {
+      if (settled) return;
+      settled = true;
+      faviconPlaceholderSizes.set(service.prefix, size);
+      resolve(size);
+    };
+    probe.onload = () => finish({ width: probe.naturalWidth, height: probe.naturalHeight });
+    probe.onerror = () => finish(null);
+    setTimeout(() => finish(null), 4000);
+    probe.src = service.placeholder;
+  });
+}
+
+/**
+ * isFaviconPlaceholder(image)
+ *
+ * True when the image is an icon service's generic placeholder rather than
+ * the site's real icon.
+ */
+function isFaviconPlaceholder(image) {
+  const service = faviconServiceFor(image.getAttribute('src'));
+  if (!service) return false;
+  const size = faviconPlaceholderSizes.get(service.prefix);
+  if (!size) return false;
+  return image.naturalWidth === size.width && image.naturalHeight === size.height;
+}
+
+/**
+ * showShortcutIcon(image)
+ *
+ * The letter is shown until an icon actually loads, so a slow or blocked
+ * source leaves a readable letter instead of an empty box.
+ */
+function showShortcutIcon(image) {
+  image.style.display = '';
+  const letter = image.nextElementSibling;
+  if (letter?.classList.contains('shortcut-letter')) letter.style.display = 'none';
+}
+
+/**
+ * hideShortcutIcon(image)
+ *
+ * No usable icon: keep the letter in place of the image.
+ */
+function hideShortcutIcon(image) {
   image.style.display = 'none';
   if (image.dataset.imageFallback === 'letter') {
     const letter = image.nextElementSibling;
     if (letter?.classList.contains('shortcut-letter')) letter.style.display = 'flex';
   }
 }
-document.addEventListener('error', handleImageError, true);
+
+/**
+ * handleImageLoad(event)
+ *
+ * A service that answers with its placeholder loads successfully, so the
+ * placeholder is detected here and the next source is tried instead.
+ */
+function handleImageLoad(event) {
+  const image = event.target;
+  if (image?.tagName !== 'IMG' || !image.dataset.faviconSources) return;
+  if (isFaviconPlaceholder(image)) {
+    const next = nextFaviconSource(image);
+    if (next) {
+      image.src = next;
+      return;
+    }
+    hideShortcutIcon(image);
+    return;
+  }
+  showShortcutIcon(image);
+}
+document.addEventListener('load', handleImageLoad, true);
+
+/**
+ * refreshFaviconPlaceholders()
+ *
+ * Re-checks the rendered icons once the placeholder sizes are known, so an
+ * icon that loaded before the sizes were learned is still corrected.
+ */
+function refreshFaviconPlaceholders() {
+  document.querySelectorAll('img[data-favicon-sources]').forEach(image => {
+    if (!isFaviconPlaceholder(image)) return;
+    const next = nextFaviconSource(image);
+    if (next) {
+      image.src = next;
+      return;
+    }
+    hideShortcutIcon(image);
+  });
+}
 
 
 /* ----------------------------------------------------------------
@@ -2485,6 +2631,48 @@ function getFaviconForShortcut(url) {
   return '';
 }
 
+/**
+ * getShortcutFaviconCandidates(shortcut, cachedFaviconUrl)
+ *
+ * Ordered list of icon sources for a shortcut — the first one that loads wins:
+ *
+ *   1. the locally cached data URI — instant, and keeps working offline
+ *   2. the icon URL stored with the shortcut, when it is a real icon
+ *   3. the site's own /favicon.ico — no third-party service involved
+ *   4. DuckDuckGo's icon service — independent of Google
+ *   5. Google's favicon service — last resort
+ *
+ * Google's service answers unknown domains with a 16x16 placeholder globe
+ * instead of failing, so it would shadow the real icon behind it. Keeping it
+ * last means a placeholder only shows up when nothing better is available.
+ *
+ * A source that fails to load is skipped, so an icon still shows up when the
+ * preferred one is missing, blocked, or unknown to the icon services.
+ */
+function getShortcutFaviconCandidates(shortcut, cachedFaviconUrl) {
+  const candidates = [];
+  const add = (url, allowData) => {
+    if (typeof url !== 'string') return;
+    const value = url.trim();
+    if (!value) return;
+    const usable = /^https?:\/\//i.test(value) || (allowData && /^data:/i.test(value));
+    if (!usable || candidates.includes(value)) return;
+    candidates.push(value);
+  };
+  add(cachedFaviconUrl, true);
+  if (!isShortcutFallbackFavicon(shortcut && shortcut.faviconUrl)) {
+    add(shortcut && shortcut.faviconUrl, false);
+  }
+  let domain = '';
+  try { domain = new URL((shortcut && shortcut.url) || '').hostname; } catch {}
+  if (domain) {
+    add(`https://${domain}/favicon.ico`, false);
+    add(`https://icons.duckduckgo.com/ip3/${domain}.ico`, false);
+    add(`https://www.google.com/s2/favicons?domain=${domain}&sz=64`, false);
+  }
+  return candidates;
+}
+
 
 /* ----------------------------------------------------------------
    SHORTCUT FAVICON CACHE — embed images as data URIs in
@@ -2609,21 +2797,25 @@ async function renderShortcuts() {
 
   const shortcuts = await getShortcuts();
   const faviconCache = await getCachedShortcutFavicons();
+  // Learn what the icon services' generic placeholder looks like, so one of
+  // them is skipped instead of winning over the site's real icon. This runs
+  // in the background: a blocked service must never hold up the render.
+  Promise.all(FAVICON_SERVICES.map(loadFaviconPlaceholderSize)).then(refreshFaviconPlaceholders);
 
   if (shortcuts.length === 0) {
     container.innerHTML = `<span class="shortcuts-empty">点击「管理 / 同步」添加快捷方式</span>`;
     return;
   }
 
-  container.innerHTML = shortcuts.map(shortcut => {
+  // Every shortcut gets an ordered list of icon sources; a source that fails
+  // to load is replaced by the next one before the letter fallback takes over.
+  const candidateLists = shortcuts.map(shortcut => getShortcutFaviconCandidates(shortcut, faviconCache[shortcut.id]));
+
+  container.innerHTML = shortcuts.map((shortcut, index) => {
     const safeUrl = escapeShortcutHtml(shortcut.url || '');
     const safeTitle = escapeShortcutHtml(shortcut.title || '');
-    // Priority: locally cached data URI → configured URL → Google API fallback.
-    // The data URI keeps the icon visible offline; the URL/API only
-    // matter until the cache is populated.
-    const faviconUrl = faviconCache[shortcut.id]
-      || shortcut.faviconUrl
-      || getFaviconForShortcut(shortcut.url);
+    const candidates = candidateLists[index];
+    const faviconUrl = candidates[0] || '';
     const safeFavicon = escapeShortcutHtml(faviconUrl);
     const letter = escapeShortcutHtml(getLetterForShortcut(shortcut.title));
 
@@ -2634,7 +2826,7 @@ async function renderShortcuts() {
       title="${safeTitle}">
       <div class="shortcut-img-box">
         ${faviconUrl
-          ? `<img class="shortcut-favicon" src="${safeFavicon}" alt="" data-image-fallback="letter"><span class="shortcut-letter" style="display:none">${letter}</span>`
+          ? `<img class="shortcut-favicon" src="${safeFavicon}" alt="" data-image-fallback="letter" data-favicon-sources="${faviconSourcesAttribute(candidates)}" style="display:none"><span class="shortcut-letter" style="display:flex">${letter}</span>`
           : `<span class="shortcut-letter" style="display:flex">${letter}</span>`
         }
       </div>
@@ -2952,12 +3144,13 @@ async function openShortcutsEditPanel() {
   // Render the list
   const shortcuts = await getShortcuts();
   list.innerHTML = shortcuts.map(s => {
-    const faviconUrl = escapeShortcutHtml(s.faviconUrl || getFaviconForShortcut(s.url));
+    const candidates = getShortcutFaviconCandidates(s, '');
+    const faviconUrl = escapeShortcutHtml(candidates[0] || '');
     const safeUrl = escapeShortcutHtml(s.url || '');
     const safeTitle = escapeShortcutHtml(s.title || '');
     const safeId = escapeShortcutHtml(s.id);
     return `<div class="shortcut-edit-item" data-shortcut-id="${safeId}">
-      <img class="shortcut-edit-favicon" src="${faviconUrl}" alt="" data-image-fallback="hide">
+      <img class="shortcut-edit-favicon" src="${faviconUrl}" alt="" data-image-fallback="hide" data-favicon-sources="${faviconSourcesAttribute(candidates)}">
       <div class="shortcut-edit-info">
         <div class="shortcut-edit-title">${safeTitle}</div>
         <div class="shortcut-edit-url">${safeUrl}</div>
