@@ -286,6 +286,9 @@ header {
 .shortcuts-config-btn:disabled { opacity: 0.5; cursor: wait; }
 .shortcuts-transfer { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--warm-gray); }
 .shortcuts-transfer-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+.shortcuts-transfer h4 { margin: 0 0 12px; font-size: 14px; font-weight: 500; }
+.shortcuts-cloud-actions { flex-wrap: wrap; margin-top: 12px; }
+.shortcuts-cloud p { overflow-wrap: anywhere; }
 .shortcuts-transfer label { display: block; font-size: 12px; margin-bottom: 6px; }
 .shortcuts-transfer select {
   width: 100%;
@@ -298,6 +301,9 @@ header {
 .shortcuts-transfer p { margin-top: 8px; font-size: 12px; line-height: 1.6; color: var(--muted); }
 #shortcutsTransferStatus:empty { display: none; }
 #shortcutsTransferStatus[data-error="true"] { color: var(--status-abandoned); }
+#shortcutsCloudStatus:empty { display: none; }
+#shortcutsCloudStatus[data-error="true"] { color: var(--status-abandoned); }
+#shortcutsCloudSummary[data-error="true"] { color: var(--status-abandoned); }
 
 .shortcuts-edit-overlay {
   position: fixed;

@@ -15,6 +15,19 @@
 
 'use strict';
 
+// Manifest V3 blocks inline onerror handlers. Capture image errors here so
+// dynamically rendered cards and shortcuts can fall back without CSP errors.
+function handleImageError(event) {
+  const image = event.target;
+  if (image?.tagName !== 'IMG' || !image.dataset.imageFallback) return;
+  image.style.display = 'none';
+  if (image.dataset.imageFallback === 'letter') {
+    const letter = image.nextElementSibling;
+    if (letter?.classList.contains('shortcut-letter')) letter.style.display = 'flex';
+  }
+}
+document.addEventListener('error', handleImageError, true);
+
 
 /* ----------------------------------------------------------------
    CHROME TABS — Direct API Access
@@ -945,7 +958,7 @@ function buildOverflowChips(hiddenTabs, urlCounts = {}) {
     const faviconUrl = getTabFavicon(tab);
     const safeFavicon = faviconUrl.replace(/"/g, '&quot;');
     return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
-      ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
+      ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" data-image-fallback="hide">` : ''}
       <span class="chip-text">${label}</span>${dupeTag}
       <div class="chip-actions">
         <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" data-tab-favicon="${safeFavicon}" title="${t('save_for_later')}">
@@ -1055,7 +1068,7 @@ function renderDomainCard(group, globalUrlCounts = null) {
     const faviconUrl = getTabFavicon(tab);
     const safeFavicon = faviconUrl.replace(/"/g, '&quot;');
     return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
-      ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
+      ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" data-image-fallback="hide">` : ''}
       <span class="chip-text">${label}</span>${dupeTag}
       <div class="chip-actions">
         <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" data-tab-favicon="${safeFavicon}" title="${t('save_for_later')}">
@@ -1187,7 +1200,7 @@ function renderDeferredItem(item) {
       <input type="checkbox" class="deferred-checkbox" data-action="check-deferred" data-deferred-id="${item.id}">
       <div class="deferred-info">
         <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
-          ${faviconUrl ? `<img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">` : ''}${item.title || item.url}
+          ${faviconUrl ? `<img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" data-image-fallback="hide">` : ''}${item.title || item.url}
         </a>
         <div class="deferred-meta">
           <span>${domain}</span>
@@ -1965,65 +1978,35 @@ document.getElementById('searchClear')?.addEventListener('click', async () => {
 
 
 /* ----------------------------------------------------------------
-   QUICK SHORTCUTS — chrome.storage.sync (synced across devices)
+   QUICK SHORTCUTS — local edits, explicit Chrome account synchronization
    ---------------------------------------------------------------- */
 
-/**
- * migrateShortcutsFromLocal()
- *
- * One-time migration: move shortcuts from chrome.storage.local to chrome.storage.sync.
- * This ensures users don't lose their shortcuts when switching to sync storage.
- */
-async function migrateShortcutsFromLocal() {
-  // Check if already migrated
-  const { shortcutsMigrated } = await chrome.storage.sync.get('shortcutsMigrated');
-  if (shortcutsMigrated) return;
-
-  // Check if there's old data in local storage
-  const { shortcuts: localShortcuts = [] } = await chrome.storage.local.get('shortcuts');
-
-  if (localShortcuts.length > 0) {
-    // Migrate to sync
-    await chrome.storage.sync.set({ shortcuts: localShortcuts });
-    // Clear local storage
-    await chrome.storage.local.remove('shortcuts');
-    console.log('[tab-out] Migrated', localShortcuts.length, 'shortcuts from local to sync');
-  }
-
-  // Mark as migrated
-  await chrome.storage.sync.set({ shortcutsMigrated: true });
-}
-
-/**
- * getShortcuts()
- *
- * Returns all saved shortcuts from chrome.storage.sync.
- */
+// Preserve the previous version's sync configuration on first use, without
+// deleting it or writing defaults to the account's cloud copy.
+let shortcutsInitialization = null;
 async function getShortcuts() {
-  // Run migration on first load
-  await migrateShortcutsFromLocal();
-
-  const { shortcuts } = await chrome.storage.sync.get('shortcuts');
-
-  // Defaults are only for a fresh installation; a saved empty list is intentional.
-  if (!Array.isArray(shortcuts)) {
-    return [
-      { id: 'default-1', url: 'https://www.google.com', title: 'Google', faviconUrl: 'https://www.google.com/s2/favicons?domain=google.com&sz=64' },
-      { id: 'default-2', url: 'https://github.com', title: 'GitHub', faviconUrl: 'https://www.google.com/s2/favicons?domain=github.com&sz=64' },
-      { id: 'default-3', url: 'https://huggingface.co', title: 'Hugging Face', faviconUrl: 'https://www.google.com/s2/favicons?domain=huggingface.co&sz=64' },
-    ];
+  const { shortcuts } = await chrome.storage.local.get('shortcuts');
+  if (Array.isArray(shortcuts)) return shortcuts;
+  if (!shortcutsInitialization) {
+    shortcutsInitialization = (async () => {
+      const { shortcuts: legacy } = await chrome.storage.sync.get('shortcuts');
+      const initial = Array.isArray(legacy) ? legacy : [
+        { id: 'default-1', url: 'https://www.google.com', title: 'Google', faviconUrl: 'https://www.google.com/s2/favicons?domain=google.com&sz=64' },
+        { id: 'default-2', url: 'https://github.com', title: 'GitHub', faviconUrl: 'https://www.google.com/s2/favicons?domain=github.com&sz=64' },
+        { id: 'default-3', url: 'https://huggingface.co', title: 'Hugging Face', faviconUrl: 'https://www.google.com/s2/favicons?domain=huggingface.co&sz=64' },
+      ];
+      // Another dashboard may have initialized local storage while we read sync.
+      const { shortcuts: current } = await chrome.storage.local.get('shortcuts');
+      if (!Array.isArray(current)) await chrome.storage.local.set({ shortcuts: initial });
+    })().finally(() => { shortcutsInitialization = null; });
   }
-
-  return shortcuts;
+  await shortcutsInitialization;
+  return (await chrome.storage.local.get('shortcuts')).shortcuts;
 }
 
-/**
- * saveShortcuts(shortcuts)
- *
- * Saves the shortcuts array to chrome.storage.sync.
- */
 async function saveShortcuts(shortcuts) {
-  await chrome.storage.sync.set({ shortcuts });
+  // Editing, reordering and importing files must never upload implicitly.
+  await chrome.storage.local.set({ shortcuts });
 }
 
 // Portable configuration excludes device-local IDs and cached image data.
@@ -2083,6 +2066,192 @@ function mergeShortcutsConfig(existing, imported, mode) {
   return result;
 }
 
+const SHORTCUTS_CLOUD_KEY = 'shortcutsCloud';
+const SHORTCUTS_CLOUD_BUTTONS = ['shortcutsCloudUploadBtn', 'shortcutsCloudDownloadBtn', 'shortcutsCloudMergeBtn'];
+let shortcutsCloudBusy = false;
+
+async function getShortcutsSyncAccount() {
+  if (!chrome.identity?.getProfileUserInfo) {
+    throw new Error('请在扩展管理页重新加载 Tab Out，以启用 Chrome 账户权限。');
+  }
+  if (chrome.permissions?.contains && !await chrome.permissions.contains({ permissions: ['identity.email'] })) {
+    throw new Error('Chrome 账户读取权限尚未生效。请在 chrome://extensions 重新加载 Tab Out，再刷新本页；打开同步设置页不会授予此权限。');
+  }
+  // SYNC only returns accounts with full Sync consent. A signed-in Chrome
+  // profile can use the newer account storage without that legacy consent.
+  // Identify the primary account; Chrome still controls actual sync transport.
+  const account = await chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' });
+  if (!account.id) throw new Error('未检测到 Chrome 主账户。请从 Chrome 右上角头像登录浏览器（仅登录 Gmail 网页不算），然后点击「重新检查账户」。');
+  return account;
+}
+
+async function checkShortcutsSyncAccount(expected) {
+  const current = await getShortcutsSyncAccount();
+  if (current.id !== expected.id) throw new Error('Chrome 账户已切换，请重新打开面板后重试。');
+}
+
+async function readShortcutsCloud(account) {
+  const snapshot = (await chrome.storage.sync.get(SHORTCUTS_CLOUD_KEY))[SHORTCUTS_CLOUD_KEY];
+  if (snapshot !== undefined) {
+    if (!snapshot || snapshot.accountId !== account.id) {
+      throw new Error('当前云端副本不属于此 Chrome 账户，请等待账户同步完成后重试。');
+    }
+    return {
+      shortcuts: parseShortcutsConfig(JSON.stringify(snapshot.config)),
+      updatedAt: snapshot.updatedAt,
+    };
+  }
+  // Older releases stored the array directly in sync. Read it without deleting
+  // or replacing it, so upgrading never erases an existing account backup.
+  const { shortcuts: legacy } = await chrome.storage.sync.get('shortcuts');
+  if (!Array.isArray(legacy)) return null;
+  return { shortcuts: parseShortcutsConfig(JSON.stringify(createShortcutsConfig(legacy))) };
+}
+
+function setShortcutsCloudStatus(message, error = false) {
+  const status = document.getElementById('shortcutsCloudStatus');
+  if (!status) return;
+  status.textContent = message;
+  status.dataset.error = String(error);
+}
+
+async function refreshShortcutsCloudState() {
+  const accountEl = document.getElementById('shortcutsCloudAccount');
+  const summaryEl = document.getElementById('shortcutsCloudSummary');
+  if (!accountEl || !summaryEl) return;
+  let signedIn = false;
+  let errorMessage = '';
+  try {
+    const account = await getShortcutsSyncAccount();
+    signedIn = true;
+    accountEl.textContent = `Chrome 账户：${account.email || '已登录'}`;
+    const cloud = await readShortcutsCloud(account);
+    await checkShortcutsSyncAccount(account);
+    const date = cloud?.updatedAt ? new Date(cloud.updatedAt) : null;
+    const time = date && !Number.isNaN(date.getTime()) ? ` · 提交时间 ${date.toLocaleString()}` : '';
+    summaryEl.textContent = cloud
+      ? `云端副本：${cloud.shortcuts.length} 个快捷方式${time}`
+      : '尚无云端副本，可先上传本地配置。';
+  } catch (error) {
+    errorMessage = error.message;
+    summaryEl.textContent = errorMessage;
+    if (!signedIn) accountEl.textContent = '无法读取 Chrome 账户';
+  }
+  summaryEl.dataset.error = String(!!errorMessage);
+  // Keep actions clickable so account/permission/missing-cloud problems produce
+  // a concrete explanation. Each action revalidates before any storage write.
+  SHORTCUTS_CLOUD_BUTTONS.forEach(id => {
+    document.getElementById(id).disabled = shortcutsCloudBusy;
+  });
+  return { signedIn, errorMessage };
+}
+
+async function syncShortcutsCloud(mode) {
+  if (shortcutsCloudBusy || shortcutsImportBusy) {
+    setShortcutsCloudStatus('正在处理配置，请稍后重试。', true);
+    return;
+  }
+  shortcutsCloudBusy = true;
+  SHORTCUTS_CLOUD_BUTTONS.forEach(id => {
+    const button = document.getElementById(id);
+    if (button) button.disabled = true;
+  });
+  setShortcutsCloudStatus('正在处理…');
+  try {
+    const account = await getShortcutsSyncAccount();
+    if (mode === 'upload') {
+      const local = await getShortcuts();
+      const config = createShortcutsConfig(local);
+      // Use the same validation as file import before writing the cloud copy.
+      parseShortcutsConfig(JSON.stringify(config));
+      const snapshot = { accountId: account.id, updatedAt: new Date().toISOString(), config };
+      const bytes = new TextEncoder().encode(SHORTCUTS_CLOUD_KEY + JSON.stringify(snapshot)).length;
+      if (bytes > (chrome.storage.sync.QUOTA_BYTES_PER_ITEM || 8192)) {
+        throw new Error('配置超出 Chrome 同步容量（每份约 8 KB），请精简后重试；仍可使用文件导出。');
+      }
+      await checkShortcutsSyncAccount(account);
+      await chrome.storage.sync.set({ [SHORTCUTS_CLOUD_KEY]: snapshot });
+      setShortcutsCloudStatus(`已提交 ${local.length} 个快捷方式至 Chrome 同步。联网且扩展程序同步开启时，Chrome 会继续传到其他设备。`);
+    } else if (mode === 'download' || mode === 'merge') {
+      const cloud = await readShortcutsCloud(account);
+      if (!cloud) throw new Error('尚无云端副本，本地配置未更改。请先在来源设备上传并等待 Chrome 同步。');
+      const local = await getShortcuts();
+      // Start from an empty set so duplicates on either side are removed.
+      // First occurrence wins: local names, IDs, and order are retained.
+      const next = mode === 'download' ? cloud.shortcuts
+        : mergeShortcutsConfig([], [...local, ...cloud.shortcuts], 'merge');
+      await checkShortcutsSyncAccount(account);
+      await saveShortcuts(next);
+      closeShortcutForm();
+      await renderShortcuts();
+      const panel = document.getElementById('shortcutsEditPanel');
+      if (panel?.classList.contains('visible')) await openShortcutsEditPanel();
+      setShortcutsCloudStatus(mode === 'download'
+        ? `已用云端副本覆盖本地，共 ${next.length} 个快捷方式。`
+        : `已将本地 ${local.length} 个与云端 ${cloud.shortcuts.length} 个取并集，共 ${next.length} 个。云端未更改。`);
+    } else {
+      throw new Error('未知的同步操作。');
+    }
+  } catch (error) {
+    setShortcutsCloudStatus(`操作未完成：${error.message || '请检查 Chrome 同步设置或存储空间后重试。'}`, true);
+  } finally {
+    shortcutsCloudBusy = false;
+    await refreshShortcutsCloudState();
+  }
+}
+
+document.getElementById('shortcutsCloudUploadBtn')?.addEventListener('click', () => syncShortcutsCloud('upload'));
+document.getElementById('shortcutsCloudDownloadBtn')?.addEventListener('click', () => syncShortcutsCloud('download'));
+document.getElementById('shortcutsCloudMergeBtn')?.addEventListener('click', () => syncShortcutsCloud('merge'));
+async function openChromeSyncSettings() {
+  const button = document.getElementById('shortcutsSyncSettingsBtn');
+  if (button.disabled) return;
+  document.getElementById('shortcutsSyncHelp').hidden = false;
+  button.disabled = true;
+  setShortcutsCloudStatus('正在打开 Chrome 同步设置…');
+  try {
+    const tab = await chrome.tabs.create({ url: 'chrome://settings/syncSetup', active: true });
+    // Bring the settings window forward even when Tab Out is in another window.
+    try {
+      if (tab?.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+    } catch {
+      // The settings tab still exists if focusing its window is unavailable.
+    }
+    setShortcutsCloudStatus('已打开 Chrome 同步设置。完成登录及同步设置后，请返回点击「重新检查账户」。');
+  } catch (error) {
+    console.warn('[tab-out] Could not open Chrome sync settings:', error);
+    setShortcutsCloudStatus('未能自动打开设置。请复制上方地址到 Chrome 地址栏并回车，然后按说明登录及开启同步。', true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.getElementById('shortcutsSyncSettingsBtn')?.addEventListener('click', openChromeSyncSettings);
+document.getElementById('shortcutsSyncRecheckBtn')?.addEventListener('click', async () => {
+  const state = await refreshShortcutsCloudState();
+  setShortcutsCloudStatus(state?.errorMessage || '已检测到 Chrome 账户，可以上传；下载或合并需要已有云端副本。', !!state?.errorMessage);
+});
+
+// Sync changes update the cloud summary only; they must never silently replace
+// the user's local shortcut list. Local edits in another window stay visible.
+chrome.storage.onChanged?.addListener(async (changes, area) => {
+  try {
+    const panel = document.getElementById('shortcutsEditPanel');
+    if (area === 'local' && changes.shortcuts) {
+      await renderShortcuts();
+      if (panel?.classList.contains('visible')) await openShortcutsEditPanel();
+    } else if (area === 'sync' && (changes[SHORTCUTS_CLOUD_KEY] || changes.shortcuts)) {
+      if (panel?.classList.contains('visible')) await refreshShortcutsCloudState();
+    }
+  } catch (error) { console.warn('[tab-out] Could not refresh shortcut storage:', error); }
+});
+chrome.identity?.onSignInChanged?.addListener(() => refreshShortcutsCloudState());
+window.addEventListener('focus', () => {
+  if (document.getElementById('shortcutsEditPanel')?.classList.contains('visible')) {
+    refreshShortcutsCloudState();
+  }
+});
+
 function setShortcutsTransferStatus(message, error = false) {
   const status = document.getElementById('shortcutsTransferStatus');
   status.textContent = message;
@@ -2116,6 +2285,11 @@ document.getElementById('shortcutsImportFile')?.addEventListener('change', async
   const input = event.target;
   const file = input.files?.[0];
   if (!file || shortcutsImportBusy) return;
+  if (shortcutsCloudBusy) {
+    input.value = '';
+    setShortcutsTransferStatus('正在处理云端同步，请稍后再导入。', true);
+    return;
+  }
   const mode = document.getElementById('shortcutsImportMode').value;
   const button = document.getElementById('shortcutsImportBtn');
   shortcutsImportBusy = true;
@@ -2126,13 +2300,8 @@ document.getElementById('shortcutsImportFile')?.addEventListener('change', async
     const imported = parseShortcutsConfig(await file.text());
     const existing = await getShortcuts();
     const merged = mergeShortcutsConfig(existing, imported, mode);
-    // Sync storage limits the UTF-8 bytes of the key plus its JSON value.
-    const bytes = new TextEncoder().encode('shortcuts' + JSON.stringify(merged)).length;
-    if (bytes > (chrome.storage.sync.QUOTA_BYTES_PER_ITEM || 8192)) {
-      throw new Error('快捷方式数量或内容超出同步存储容量，请精简配置后重试。');
-    }
     try { await saveShortcuts(merged); }
-    catch { throw new Error('保存失败，现有配置未更改，请检查同步存储空间后重试。'); }
+    catch { throw new Error('保存失败，现有配置未更改，请检查本地存储空间后重试。'); }
     closeShortcutForm();
     await renderShortcuts();
     await openShortcutsEditPanel();
@@ -2255,13 +2424,20 @@ const SHORTCUT_FAVICON_CACHE_KEY = 'shortcutFavicons';
 /**
  * fetchFaviconAsDataUri(url)
  *
- * Downloads a favicon image and converts it to a base64 data URI.
- * Returns null on any failure (network, CORS, non-https, invalid response).
+ * Reads Chrome's cached favicon for a page and converts it to a data URI.
+ * Returns null when the permission, cached image or conversion is unavailable.
  */
-async function fetchFaviconAsDataUri(url) {
-  if (!url || !url.startsWith('https://')) return null;
+async function fetchFaviconAsDataUri(pageUrl) {
+  if (!/^https?:\/\//.test(pageUrl || '')) return null;
   try {
-    const response = await fetch(url);
+    // Use Chrome's cached favicon endpoint under our own extension origin.
+    // Fetching arbitrary website icon URLs needs CORS permission, even when
+    // those same URLs can be displayed in an <img> without it.
+    if (!chrome.permissions?.contains || !await chrome.permissions.contains({ permissions: ['favicon'] })) return null;
+    const iconUrl = new URL(chrome.runtime.getURL('/_favicon/'));
+    iconUrl.searchParams.set('pageUrl', pageUrl);
+    iconUrl.searchParams.set('size', '64');
+    const response = await fetch(iconUrl.href);
     if (!response.ok) return null;
     const blob = await response.blob();
     return await new Promise((resolve, reject) => {
@@ -2319,7 +2495,9 @@ async function getCachedShortcutFavicons() {
  */
 async function prefetchShortcutFavicon(shortcutId, faviconUrl) {
   if (!shortcutId || !faviconUrl) return;
-  const dataUri = await fetchFaviconAsDataUri(faviconUrl);
+  const shortcut = (await getShortcuts()).find(item => item.id === shortcutId);
+  if (!shortcut) return;
+  const dataUri = await fetchFaviconAsDataUri(shortcut.url);
   if (!dataUri) return;
   await cacheShortcutFaviconDataUri(shortcutId, dataUri);
   renderShortcuts();
@@ -2348,14 +2526,14 @@ async function renderShortcuts() {
   const faviconCache = await getCachedShortcutFavicons();
 
   if (shortcuts.length === 0) {
-    container.innerHTML = `<span class="shortcuts-empty">点击「管理 / 导入导出」添加快捷方式</span>`;
+    container.innerHTML = `<span class="shortcuts-empty">点击「管理 / 同步」添加快捷方式</span>`;
     return;
   }
 
   container.innerHTML = shortcuts.map(shortcut => {
     const safeUrl = escapeShortcutHtml(shortcut.url || '');
     const safeTitle = escapeShortcutHtml(shortcut.title || '');
-    // Priority: locally cached data URI → synced URL → Google API fallback.
+    // Priority: locally cached data URI → configured URL → Google API fallback.
     // The data URI keeps the icon visible offline; the URL/API only
     // matter until the cache is populated.
     const faviconUrl = faviconCache[shortcut.id]
@@ -2371,7 +2549,7 @@ async function renderShortcuts() {
       title="${safeTitle}">
       <div class="shortcut-img-box">
         ${faviconUrl
-          ? `<img class="shortcut-favicon" src="${safeFavicon}" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><span class="shortcut-letter" style="display:none">${letter}</span>`
+          ? `<img class="shortcut-favicon" src="${safeFavicon}" alt="" data-image-fallback="letter"><span class="shortcut-letter" style="display:none">${letter}</span>`
           : `<span class="shortcut-letter" style="display:flex">${letter}</span>`
         }
       </div>
@@ -2600,8 +2778,7 @@ async function updateShortcutFavicon(shortcutId, faviconUrl) {
   if (!shortcutId) return;
   if (!faviconUrl || !faviconUrl.startsWith('https://')) return;
 
-  // Persist the remote URL to sync (existing behaviour) so other
-  // devices inherit the preference.
+  // Persist the icon preference locally; an explicit upload includes it.
   const shortcuts = await getShortcuts();
   const idx = shortcuts.findIndex(s => s.id === shortcutId);
   if (idx === -1) return;
@@ -2617,7 +2794,7 @@ async function updateShortcutFavicon(shortcutId, faviconUrl) {
   // Fire-and-forget so the caller doesn't block on the network; once
   // the data URI is ready we re-render to switch from URL → data URI.
   (async () => {
-    const dataUri = await fetchFaviconAsDataUri(faviconUrl);
+    const dataUri = await fetchFaviconAsDataUri(shortcuts[idx].url);
     if (!dataUri) return;
     await cacheShortcutFaviconDataUri(shortcutId, dataUri);
     renderShortcuts();
@@ -2695,7 +2872,7 @@ async function openShortcutsEditPanel() {
     const safeTitle = escapeShortcutHtml(s.title || '');
     const safeId = escapeShortcutHtml(s.id);
     return `<div class="shortcut-edit-item" data-shortcut-id="${safeId}">
-      <img class="shortcut-edit-favicon" src="${faviconUrl}" alt="" onerror="this.style.opacity='0.3'">
+      <img class="shortcut-edit-favicon" src="${faviconUrl}" alt="" data-image-fallback="hide">
       <div class="shortcut-edit-info">
         <div class="shortcut-edit-title">${safeTitle}</div>
         <div class="shortcut-edit-url">${safeUrl}</div>
@@ -2717,6 +2894,7 @@ async function openShortcutsEditPanel() {
 
   panel.classList.add('visible');
   overlay.classList.add('visible');
+  await refreshShortcutsCloudState();
 }
 
 // Close edit panel

@@ -42,7 +42,7 @@
     <div class="section-header">
       <h2>快捷方式</h2>
       <div class="section-line"></div>
-      <button class="shortcuts-config-btn" id="shortcutsManageBtn" type="button">管理 / 导入导出</button>
+      <button class="shortcuts-config-btn" id="shortcutsManageBtn" type="button">管理 / 同步</button>
     </div>
     <div class="shortcuts-icons" id="shortcutsIcons"></div>
   </div>
@@ -163,7 +163,32 @@
     </button>
   </div>
   <div class="shortcuts-edit-content" id="shortcutsEditContent">
+    <div class="shortcuts-transfer shortcuts-cloud">
+      <h4>谷歌账户同步</h4>
+      <p id="shortcutsCloudAccount">正在检查 Chrome 同步账户…</p>
+      <div class="shortcuts-transfer-actions shortcuts-cloud-actions">
+        <button class="shortcuts-config-btn" id="shortcutsSyncSettingsBtn" type="button">打开 Chrome 同步设置</button>
+        <button class="shortcuts-config-btn" id="shortcutsSyncRecheckBtn" type="button">重新检查账户</button>
+      </div>
+      <div id="shortcutsSyncHelp" hidden>
+        <p>请在 Chrome 中完成登录和同步设置。本插件使用浏览器账户，不会弹出单独的谷歌登录窗口。</p>
+        <p>若设置页没有打开，请复制以下地址到 Chrome 地址栏并回车：</p>
+        <p><code>chrome://settings/syncSetup</code></p>
+        <p>登录后开启同步，并在「管理同步内容」中启用「扩展程序」。完成后回到这里，点击「重新检查账户」。</p>
+      </div>
+      <p id="shortcutsCloudSummary" role="status" aria-live="polite">正在读取云端副本…</p>
+      <div class="shortcuts-transfer-actions shortcuts-cloud-actions">
+        <button class="shortcuts-config-btn" id="shortcutsCloudUploadBtn" type="button">上传云端</button>
+        <button class="shortcuts-config-btn" id="shortcutsCloudDownloadBtn" type="button">下载覆盖本地</button>
+        <button class="shortcuts-config-btn" id="shortcutsCloudMergeBtn" type="button">合并到本地</button>
+      </div>
+      <p>上传覆盖云端；下载覆盖本地；合并按网址取并集，同网址保留本地名称和顺序。下载和合并不会改动云端。</p>
+      <p>请在各设备登录同一 Chrome 账户并开启扩展程序同步。读取的是 Chrome 已同步到本机的云端副本，跨设备更新可能稍有延迟。</p>
+      <p>识别到账户不代表云端传输已经开启。账户权限、未登录或尚无副本的问题会显示具体提示，不会静默禁用按钮。</p>
+      <p id="shortcutsCloudStatus" role="status" aria-live="polite"></p>
+    </div>
     <div class="shortcuts-transfer">
+      <h4>配置文件</h4>
       <div class="shortcuts-transfer-actions">
         <button class="shortcuts-config-btn" id="shortcutsExportBtn" type="button">导出配置</button>
         <button class="shortcuts-config-btn" id="shortcutsImportBtn" type="button">导入配置</button>

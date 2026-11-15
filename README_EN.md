@@ -4,7 +4,7 @@
 
 Tab Out is a Chrome extension that turns the extension page into a dashboard of everything you have open. Tabs are grouped by domain, with homepages (Gmail, X, LinkedIn, etc.) pulled into their own group. Close tabs with a satisfying swoosh + confetti.
 
-No server. No account. No external API calls. Just a Chrome extension.
+A Chrome extension with no self-hosted server or extra account. Optional shortcut synchronization uses your Chrome account.
 
 [中文 README](README.md)
 
@@ -42,7 +42,7 @@ Tab Out flips the script: **makes closing tabs easy, clear, and even a little sa
 - **Save for later** — bookmark tabs to a checklist before closing, with archive support
 - **Localhost grouping** — shows port numbers so you can tell your local projects apart
 - **Expandable groups** — shows first 8 tabs, rest are behind a clickable "+N more"
-- **100% local** — your data never leaves your machine
+- **Local first** — tabs and saved-for-later data stay on your device; manually uploaded shortcuts use Chrome account sync.
 - **Pure extension** — no server, no Node.js, no npm, just load and go
 
 **New in this fork**
@@ -97,6 +97,20 @@ git clone https://github.com/jacky-ch93/tab-out.git
 
 ---
 
+## Shortcut account sync
+
+Open **管理 / 同步** (Manage / Sync) beside the shortcuts. Reload the extension in `chrome://extensions` after upgrading to enable the new account permissions. Sign into the same Chrome account on each device and enable extension syncing.
+
+- **上传云端** (Upload): replace the cloud snapshot with local shortcuts.
+- **下载覆盖本地** (Download): replace local shortcuts with the cloud snapshot.
+- **合并到本地** (Merge): take the union by normalized URL, keeping local names and order and appending cloud-only entries. The cloud remains unchanged.
+
+Edits and JSON file imports save locally until you upload. Chrome controls transport timing; downloads read the latest snapshot already synced to this device, and uploading does not guarantee immediate delivery to another device. Cloud snapshots are limited to approximately 8 KB; JSON import/export remains available for larger configurations. Existing local or legacy sync shortcuts are preserved during upgrade.
+
+Both installations must have the **same extension ID**. Unpacked extensions can have different IDs on different paths. For development, use the same manifest `key` as described in [Chrome's documentation](https://developer.chrome.com/docs/extensions/reference/manifest/key). Export your configuration before changing an ID, then import it into the new installation. This update preserves the current ID.
+
+Run regression checks with `node --test tests/shortcuts-config.test.cjs`.
+
 ## How it works
 
 ```
@@ -108,7 +122,7 @@ Click the extension icon
   -> Save tabs for later before closing them
 ```
 
-Everything runs inside the Chrome extension. No external server, no API calls, no data sent anywhere. Saved tabs are stored in `chrome.storage.local`.
+Everything runs inside the extension without a self-hosted server. Tabs, saved-for-later data and shortcut edits stay in `chrome.storage.local`. Explicit uploads save a shortcut snapshot to `chrome.storage.sync`; Chrome handles account synchronization. The account email is displayed only to identify the current sync account.
 
 ---
 
