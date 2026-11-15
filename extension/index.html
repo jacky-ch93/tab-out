@@ -163,8 +163,8 @@
     </button>
   </div>
   <div class="shortcuts-edit-content" id="shortcutsEditContent">
-    <div class="shortcuts-transfer shortcuts-cloud">
-      <h4>谷歌账户同步</h4>
+    <details class="shortcuts-transfer shortcuts-cloud">
+      <summary>谷歌账户同步</summary>
       <p id="shortcutsCloudAccount">正在检查 Chrome 同步账户…</p>
       <div class="shortcuts-transfer-actions shortcuts-cloud-actions">
         <button class="shortcuts-config-btn" id="shortcutsSyncSettingsBtn" type="button">打开 Chrome 同步设置</button>
@@ -186,9 +186,9 @@
       <p>请在各设备登录同一 Chrome 账户并开启扩展程序同步。读取的是 Chrome 已同步到本机的云端副本，跨设备更新可能稍有延迟。</p>
       <p>识别到账户不代表云端传输已经开启。账户权限、未登录或尚无副本的问题会显示具体提示，不会静默禁用按钮。</p>
       <p id="shortcutsCloudStatus" role="status" aria-live="polite"></p>
-    </div>
-    <div class="shortcuts-transfer">
-      <h4>配置文件</h4>
+    </details>
+    <details class="shortcuts-transfer">
+      <summary>配置文件</summary>
       <div class="shortcuts-transfer-actions">
         <button class="shortcuts-config-btn" id="shortcutsExportBtn" type="button">导出配置</button>
         <button class="shortcuts-config-btn" id="shortcutsImportBtn" type="button">导入配置</button>
@@ -201,7 +201,7 @@
       <p>导出 JSON 文件后，可在另一台设备导入。保留名称、网址、图标地址及排列顺序。</p>
       <p id="shortcutsTransferStatus" role="status" aria-live="polite"></p>
       <input id="shortcutsImportFile" type="file" accept=".json,application/json" hidden>
-    </div>
+    </details>
     <div class="shortcuts-edit-list" id="shortcutsEditList"></div>
     <div class="shortcuts-edit-add">
       <button class="shortcuts-add-btn" id="shortcutsAddBtn">
