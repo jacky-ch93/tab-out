@@ -855,6 +855,16 @@ const ICONS = {
    ---------------------------------------------------------------- */
 let domainGroups = [];
 
+// Keep the source markup separate from the live DOM: expanding a card or
+// filtering a list changes the DOM without changing its underlying content.
+const renderedMarkup = new WeakMap();
+
+function updateMarkup(element, markup, automatic = false) {
+  if (automatic && renderedMarkup.get(element) === markup) return;
+  element.innerHTML = markup;
+  renderedMarkup.set(element, markup);
+}
+
 
 /* ----------------------------------------------------------------
    HELPER: filter out browser-internal pages
@@ -1104,7 +1114,7 @@ function renderDomainCard(group, globalUrlCounts = null) {
  * "Saved for Later" checklist column. Shows active items as a checklist
  * and completed items in a collapsible archive.
  */
-async function renderDeferredColumn() {
+async function renderDeferredColumn({ automatic = false } = {}) {
   const column         = document.getElementById('deferredColumn');
   const list           = document.getElementById('deferredList');
   const empty          = document.getElementById('deferredEmpty');
@@ -1129,7 +1139,7 @@ async function renderDeferredColumn() {
     // Render active checklist items
     if (active.length > 0) {
       countEl.textContent = t('items_count', active.length);
-      list.innerHTML = active.map(item => renderDeferredItem(item)).join('');
+      updateMarkup(list, active.map(item => renderDeferredItem(item)).join(''), automatic);
       list.style.display = 'block';
       empty.style.display = 'none';
     } else {
@@ -1141,7 +1151,11 @@ async function renderDeferredColumn() {
     // Render archive section
     if (archived.length > 0) {
       archiveCountEl.textContent = `(${archived.length})`;
-      archiveList.innerHTML = archived.map(item => renderArchiveItem(item)).join('');
+      // A tab event must not reset the user's archive search.
+      const archiveQuery = document.getElementById('archiveSearch')?.value.trim();
+      if (!automatic || !archiveQuery) {
+        updateMarkup(archiveList, archived.map(item => renderArchiveItem(item)).join(''), automatic);
+      }
       archiveEl.style.display = 'block';
     } else {
       archiveEl.style.display = 'none';
@@ -1218,7 +1232,7 @@ function renderArchiveItem(item) {
  * 5. Updates footer stats
  * 6. Renders the "Saved for Later" checklist
  */
-async function renderStaticDashboard() {
+async function renderStaticDashboard({ automatic = false } = {}) {
   // --- Header ---
   const greetingEl = document.getElementById('greeting');
   const dateEl     = document.getElementById('dateDisplay');
@@ -1349,7 +1363,7 @@ async function renderStaticDashboard() {
 
   if (domainGroups.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = t('section_open_tabs');
-    openTabsSectionCount.innerHTML = `${t('domains_count', domainGroups.length)} &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} ${t('close_all_tabs', realTabs.length)}</button>`;
+    updateMarkup(openTabsSectionCount, `${t('domains_count', domainGroups.length)} &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} ${t('close_all_tabs', realTabs.length)}</button>`, automatic);
 
     // Split each domain group by window so the same domain in two windows
     // appears as two separate cards.
@@ -1402,7 +1416,13 @@ async function renderStaticDashboard() {
       cardsHtml += groups.map(g => renderDomainCard(g, globalUrlCounts)).join('');
     });
 
-    openTabsMissionsEl.innerHTML = cardsHtml;
+    // Retain existing nodes (including expanded overflow) on noisy tab events.
+    // The class is added before subsequent replacements so entry animations
+    // only play on the first render, even when tab content really changes.
+    if (renderedMarkup.has(openTabsMissionsEl)) {
+      openTabsMissionsEl.classList.add('has-rendered');
+    }
+    updateMarkup(openTabsMissionsEl, cardsHtml, automatic);
     openTabsSection.style.display = 'block';
 
     // Show the search bar when there are tabs to search
@@ -1422,7 +1442,7 @@ async function renderStaticDashboard() {
   checkTabOutDupes();
 
   // --- Render "Saved for Later" column ---
-  await renderDeferredColumn();
+  await renderDeferredColumn({ automatic });
 }
 
 async function renderDashboard() {
@@ -1983,10 +2003,10 @@ async function getShortcuts() {
   // Run migration on first load
   await migrateShortcutsFromLocal();
 
-  const { shortcuts = [] } = await chrome.storage.sync.get('shortcuts');
+  const { shortcuts } = await chrome.storage.sync.get('shortcuts');
 
-  // Return default shortcuts if none exist
-  if (shortcuts.length === 0) {
+  // Defaults are only for a fresh installation; a saved empty list is intentional.
+  if (!Array.isArray(shortcuts)) {
     return [
       { id: 'default-1', url: 'https://www.google.com', title: 'Google', faviconUrl: 'https://www.google.com/s2/favicons?domain=google.com&sz=64' },
       { id: 'default-2', url: 'https://github.com', title: 'GitHub', faviconUrl: 'https://www.google.com/s2/favicons?domain=github.com&sz=64' },
@@ -2004,6 +2024,135 @@ async function getShortcuts() {
  */
 async function saveShortcuts(shortcuts) {
   await chrome.storage.sync.set({ shortcuts });
+}
+
+// Portable configuration excludes device-local IDs and cached image data.
+function createShortcutsConfig(shortcuts) {
+  return {
+    format: 'tab-out-shortcuts',
+    version: 1,
+    shortcuts: shortcuts.map(({ title, url, faviconUrl }) => ({ title, url, faviconUrl: faviconUrl || '' })),
+  };
+}
+
+function parseShortcutsConfig(text) {
+  let config;
+  try { config = JSON.parse(text.replace(/^\uFEFF/, '')); }
+  catch { throw new Error('文件不是有效的 JSON 配置。'); }
+  if (!config || config.format !== 'tab-out-shortcuts' || config.version !== 1 || !Array.isArray(config.shortcuts)) {
+    throw new Error('不支持的配置格式或版本，请选择 Tab Out 导出的配置文件。');
+  }
+  return config.shortcuts.map((item, index) => {
+    const invalid = () => new Error(`第 ${index + 1} 个快捷方式无效：名称须为文本，网址及图标地址须以 http:// 或 https:// 开头。`);
+    if (!item || typeof item.title !== 'string' || typeof item.url !== 'string') throw invalid();
+    let url;
+    try { url = new URL(item.url); } catch { throw invalid(); }
+    if (!['http:', 'https:'].includes(url.protocol)) throw invalid();
+    let faviconUrl = '';
+    if (item.faviconUrl) {
+      if (typeof item.faviconUrl !== 'string') throw invalid();
+      let icon;
+      try { icon = new URL(item.faviconUrl); } catch { throw invalid(); }
+      if (!['http:', 'https:'].includes(icon.protocol)) throw invalid();
+      faviconUrl = icon.href;
+    }
+    return {
+      id: crypto.randomUUID(),
+      title: item.title.trim() || url.hostname,
+      url: item.url.trim(),
+      faviconUrl,
+    };
+  });
+}
+
+function mergeShortcutsConfig(existing, imported, mode) {
+  if (mode === 'replace') return imported;
+  if (mode !== 'merge') throw new Error('请选择有效的导入方式。');
+  const result = [...existing];
+  const normalize = url => {
+    try { return new URL(url).href; } catch { return url; }
+  };
+  const seen = new Set(existing.map(item => normalize(item.url)));
+  for (const item of imported) {
+    const key = normalize(item.url);
+    if (!seen.has(key)) {
+      result.push(item);
+      seen.add(key);
+    }
+  }
+  return result;
+}
+
+function setShortcutsTransferStatus(message, error = false) {
+  const status = document.getElementById('shortcutsTransferStatus');
+  status.textContent = message;
+  status.dataset.error = String(error);
+}
+
+document.getElementById('shortcutsExportBtn')?.addEventListener('click', async () => {
+  try {
+    const config = createShortcutsConfig(await getShortcuts());
+    const blob = new Blob([JSON.stringify(config, null, 2) + '\n'], { type: 'application/json' });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = `tab-out-shortcuts-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    setShortcutsTransferStatus(`已导出 ${config.shortcuts.length} 个快捷方式。`);
+  } catch {
+    setShortcutsTransferStatus('导出失败，请重试。', true);
+  }
+});
+
+let shortcutsImportBusy = false;
+document.getElementById('shortcutsImportBtn')?.addEventListener('click', () => {
+  document.getElementById('shortcutsImportFile').click();
+});
+
+document.getElementById('shortcutsImportFile')?.addEventListener('change', async (event) => {
+  const input = event.target;
+  const file = input.files?.[0];
+  if (!file || shortcutsImportBusy) return;
+  const mode = document.getElementById('shortcutsImportMode').value;
+  const button = document.getElementById('shortcutsImportBtn');
+  shortcutsImportBusy = true;
+  button.disabled = true;
+  setShortcutsTransferStatus('正在导入…');
+  try {
+    if (file.size > 1024 * 1024) throw new Error('配置文件过大，请选择小于 1 MB 的文件。');
+    const imported = parseShortcutsConfig(await file.text());
+    const existing = await getShortcuts();
+    const merged = mergeShortcutsConfig(existing, imported, mode);
+    // Sync storage limits the UTF-8 bytes of the key plus its JSON value.
+    const bytes = new TextEncoder().encode('shortcuts' + JSON.stringify(merged)).length;
+    if (bytes > (chrome.storage.sync.QUOTA_BYTES_PER_ITEM || 8192)) {
+      throw new Error('快捷方式数量或内容超出同步存储容量，请精简配置后重试。');
+    }
+    try { await saveShortcuts(merged); }
+    catch { throw new Error('保存失败，现有配置未更改，请检查同步存储空间后重试。'); }
+    closeShortcutForm();
+    await renderShortcuts();
+    await openShortcutsEditPanel();
+    const added = merged.length - existing.length;
+    setShortcutsTransferStatus(mode === 'replace'
+      ? `已替换配置，共 ${merged.length} 个快捷方式。`
+      : `已新增 ${added} 个，跳过 ${imported.length - added} 个重复网址。`);
+  } catch (error) {
+    setShortcutsTransferStatus(error.message || '导入失败，请重试。', true);
+  } finally {
+    input.value = ''; // Allow retrying the same file after an error.
+    button.disabled = false;
+    shortcutsImportBusy = false;
+  }
+});
+
+function escapeShortcutHtml(value) {
+  return String(value).replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[char]);
 }
 
 function isShortcutFallbackFavicon(faviconUrl) {
@@ -2199,26 +2348,26 @@ async function renderShortcuts() {
   const faviconCache = await getCachedShortcutFavicons();
 
   if (shortcuts.length === 0) {
-    container.innerHTML = `<span class="shortcuts-empty">右键点击添加快捷方式</span>`;
+    container.innerHTML = `<span class="shortcuts-empty">点击「管理 / 导入导出」添加快捷方式</span>`;
     return;
   }
 
   container.innerHTML = shortcuts.map(shortcut => {
-    const safeUrl = (shortcut.url || '').replace(/"/g, '&quot;');
-    const safeTitle = (shortcut.title || '').replace(/"/g, '&quot;');
+    const safeUrl = escapeShortcutHtml(shortcut.url || '');
+    const safeTitle = escapeShortcutHtml(shortcut.title || '');
     // Priority: locally cached data URI → synced URL → Google API fallback.
     // The data URI keeps the icon visible offline; the URL/API only
     // matter until the cache is populated.
     const faviconUrl = faviconCache[shortcut.id]
       || shortcut.faviconUrl
       || getFaviconForShortcut(shortcut.url);
-    const safeFavicon = faviconUrl.replace(/"/g, '&quot;');
-    const letter = getLetterForShortcut(shortcut.title);
+    const safeFavicon = escapeShortcutHtml(faviconUrl);
+    const letter = escapeShortcutHtml(getLetterForShortcut(shortcut.title));
 
     return `<div class="shortcut-icon"
       data-action="shortcut-open"
       data-shortcut-url="${safeUrl}"
-      data-shortcut-id="${shortcut.id}"
+      data-shortcut-id="${escapeShortcutHtml(shortcut.id)}"
       title="${safeTitle}">
       <div class="shortcut-img-box">
         ${faviconUrl
@@ -2541,22 +2690,23 @@ async function openShortcutsEditPanel() {
   // Render the list
   const shortcuts = await getShortcuts();
   list.innerHTML = shortcuts.map(s => {
-    const faviconUrl = s.faviconUrl || getFaviconForShortcut(s.url);
-    const safeUrl = (s.url || '').replace(/"/g, '&quot;');
-    const safeTitle = (s.title || '').replace(/"/g, '&quot;');
-    return `<div class="shortcut-edit-item" data-shortcut-id="${s.id}">
+    const faviconUrl = escapeShortcutHtml(s.faviconUrl || getFaviconForShortcut(s.url));
+    const safeUrl = escapeShortcutHtml(s.url || '');
+    const safeTitle = escapeShortcutHtml(s.title || '');
+    const safeId = escapeShortcutHtml(s.id);
+    return `<div class="shortcut-edit-item" data-shortcut-id="${safeId}">
       <img class="shortcut-edit-favicon" src="${faviconUrl}" alt="" onerror="this.style.opacity='0.3'">
       <div class="shortcut-edit-info">
         <div class="shortcut-edit-title">${safeTitle}</div>
         <div class="shortcut-edit-url">${safeUrl}</div>
       </div>
       <div class="shortcut-edit-actions">
-        <button class="shortcut-edit-btn" data-action="shortcut-edit" data-shortcut-id="${s.id}" title="Edit">
+        <button class="shortcut-edit-btn" data-action="shortcut-edit" data-shortcut-id="${safeId}" title="Edit">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
           </svg>
         </button>
-        <button class="shortcut-edit-btn delete" data-action="shortcut-delete" data-shortcut-id="${s.id}" title="Delete">
+        <button class="shortcut-edit-btn delete" data-action="shortcut-delete" data-shortcut-id="${safeId}" title="Delete">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
           </svg>
@@ -2579,6 +2729,7 @@ function closeShortcutsEditPanel() {
 }
 
 document.getElementById('shortcutsEditClose')?.addEventListener('click', closeShortcutsEditPanel);
+document.getElementById('shortcutsManageBtn')?.addEventListener('click', openShortcutsEditPanel);
 document.getElementById('shortcutsEditOverlay')?.addEventListener('click', closeShortcutsEditPanel);
 
 // Add new shortcut button
@@ -2772,7 +2923,9 @@ renderDashboard();
 
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(async () => {
-      await renderStaticDashboard();
+      // The user may have started searching during the debounce delay.
+      if (searchInput && searchInput.value.trim()) return;
+      await renderStaticDashboard({ automatic: true });
     }, 500);
   }
 
@@ -2780,7 +2933,7 @@ renderDashboard();
   chrome.tabs.onRemoved.addListener(scheduleRefresh);
   chrome.tabs.onUpdated.addListener((_id, changeInfo) => {
     // Only refresh on meaningful changes to avoid noise from minor updates
-    if (changeInfo.title || changeInfo.url || changeInfo.status === 'complete') {
+    if ('title' in changeInfo || 'url' in changeInfo || 'favIconUrl' in changeInfo) {
       scheduleRefresh();
     }
   });

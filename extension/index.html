@@ -42,6 +42,7 @@
     <div class="section-header">
       <h2>快捷方式</h2>
       <div class="section-line"></div>
+      <button class="shortcuts-config-btn" id="shortcutsManageBtn" type="button">管理 / 导入导出</button>
     </div>
     <div class="shortcuts-icons" id="shortcutsIcons"></div>
   </div>
@@ -162,6 +163,20 @@
     </button>
   </div>
   <div class="shortcuts-edit-content" id="shortcutsEditContent">
+    <div class="shortcuts-transfer">
+      <div class="shortcuts-transfer-actions">
+        <button class="shortcuts-config-btn" id="shortcutsExportBtn" type="button">导出配置</button>
+        <button class="shortcuts-config-btn" id="shortcutsImportBtn" type="button">导入配置</button>
+      </div>
+      <label for="shortcutsImportMode">导入方式</label>
+      <select id="shortcutsImportMode">
+        <option value="merge">合并：保留现有，跳过重复网址</option>
+        <option value="replace">替换：按文件恢复，覆盖现有快捷方式</option>
+      </select>
+      <p>导出 JSON 文件后，可在另一台设备导入。保留名称、网址、图标地址及排列顺序。</p>
+      <p id="shortcutsTransferStatus" role="status" aria-live="polite"></p>
+      <input id="shortcutsImportFile" type="file" accept=".json,application/json" hidden>
+    </div>
     <div class="shortcuts-edit-list" id="shortcutsEditList"></div>
     <div class="shortcuts-edit-add">
       <button class="shortcuts-add-btn" id="shortcutsAddBtn">

@@ -271,6 +271,34 @@ header {
 /* ================================================================
    SHORTCUTS EDIT PANEL
    ================================================================ */
+.shortcuts-config-btn {
+  padding: 7px 12px;
+  border: 1px solid var(--warm-gray);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.shortcuts-config-btn:hover { border-color: var(--accent-amber); }
+.shortcuts-config-btn:disabled { opacity: 0.5; cursor: wait; }
+.shortcuts-transfer { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--warm-gray); }
+.shortcuts-transfer-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+.shortcuts-transfer label { display: block; font-size: 12px; margin-bottom: 6px; }
+.shortcuts-transfer select {
+  width: 100%;
+  padding: 8px;
+  background: var(--card-bg);
+  color: var(--ink);
+  border: 1px solid var(--warm-gray);
+  border-radius: 6px;
+}
+.shortcuts-transfer p { margin-top: 8px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+#shortcutsTransferStatus:empty { display: none; }
+#shortcutsTransferStatus[data-error="true"] { color: var(--status-abandoned); }
+
 .shortcuts-edit-overlay {
   position: fixed;
   inset: 0;
@@ -1408,6 +1436,7 @@ header { animation: fadeUp 0.5s ease both; }
 .abandoned-section .missions .mission-card:nth-child(1) { animation: fadeUp 0.4s ease 0.5s both; }
 .abandoned-section .missions .mission-card:nth-child(2) { animation: fadeUp 0.4s ease 0.55s both; }
 .abandoned-section .missions .mission-card:nth-child(3) { animation: fadeUp 0.4s ease 0.6s both; }
+#openTabsMissions.has-rendered .mission-card { animation: none; }
 footer { animation: fadeUp 0.5s ease 0.65s both; }
 
 .deferred-list .deferred-item:nth-child(1) { animation-delay: 0.05s; }
